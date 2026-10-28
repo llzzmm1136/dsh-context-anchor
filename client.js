@@ -87,6 +87,7 @@ window.__ModuleLoader__.load({
       adviceCustomLow: (p, t) => `当前 ${p}%，离 ${t}% 还远；这个设置偏保守，会话会一直很满。`,
       adviceNoRecall: '检索索引已建好但还没被用过：问模型一件早先的事就能验证记忆。',
       adviceProtect: '会话已很长：把关键文件路径填进保护内容，压缩时它们会留在表层。',
+      renderFailed: (m) => `面板渲染失败：${m}`,
       saveFailed: '保存失败，稍后重试。',
       policyUnavailable: '设置暂不可用：宿主还没有加载这一版，重启 DSH 后再打开面板。',
       noCompaction: '当前环境没有压缩服务，自定义阈值不会生效。',
@@ -623,7 +624,11 @@ window.__ModuleLoader__.load({
             return null;
           })();
 
-          return h('div', null,
+          // A thrown render would unmount the whole panel and look like the click
+          // did nothing, which is the worst possible failure mode for a menu. Every
+          // h() call evaluates immediately, so one try/catch here covers the body.
+          try {
+            return h('div', null,
           h('div', {
             key: 'backdrop',
             onClick: () => store.publish({ open: false }),
@@ -678,12 +683,12 @@ window.__ModuleLoader__.load({
               background: 'var(--dsw-alias-interactive-bg-hover)',
             },
           }, h('div', { style: { height: '100%', width: `${percent}%`, background: tier.tone } })),
-          known && cache?.history?.length > 0 && h('div', {
+          known && cached.history?.length > 0 && h('div', {
             key: 'trend',
             style: { marginTop: 12 },
           },
           h('div', { style: { fontSize: 11, fontWeight: 500, color: 'var(--dsw-alias-label-secondary)', marginBottom: 4 } }, copy.trendTitle),
-          renderTrendChart(cache.history)),
+          renderTrendChart(cached.history)),
           policy !== null && policy !== false && h('div', { key: 'policy' },
             h('div', { style: DIVIDER }),
             h('div', { style: ROW },
@@ -924,6 +929,20 @@ window.__ModuleLoader__.load({
               fontSize: 11, lineHeight: '16px',
             },
           }, copy.note)));
+          } catch (error) {
+            return h('div', {
+              key: 'panel-error',
+              role: 'alert',
+              style: {
+                position: 'fixed', left: state.left, bottom: state.bottom, zIndex: 1,
+                boxSizing: 'border-box', maxWidth: 320, padding: 12,
+                borderRadius: 'var(--dsw-radius-lg)', boxShadow: 'var(--dsw-elevation-prominent)',
+                backgroundColor: 'var(--dsw-alias-bg-base)',
+                color: 'var(--dsw-alias-state-error-primary, #d54941)',
+                fontSize: 12, lineHeight: '18px',
+              },
+            }, copy.renderFailed(error && error.message ? error.message : String(error)));
+          }
         }
 
         ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({

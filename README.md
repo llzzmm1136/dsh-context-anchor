@@ -139,14 +139,27 @@ type:compaction                       # 只看压缩事件
 ## 开发
 
 ```bash
-node --check index.js   # 语法
-node smoke.mjs          # 主机端自检：锚点、工具、内核、投影、压缩判定
-node --check client.js
-node probe-client.mjs   # 客户端渲染探针：槽位注册、点击、面板内容
+npm test                # 全部自检，提交前必须全绿
+```
+
+它依次运行：
+
+| 脚本 | 覆盖 |
+| --- | --- |
+| `node --check index.js client.js` | 语法 |
+| `smoke.mjs` | 主机端：锚点、工具、内核、投影、压缩判定 |
+| `probe-client.mjs` | 客户端渲染探针：槽位注册、点击链路、面板文案、趋势图 |
+| `test/cut-region.mjs` | 压缩切分与预览：边界、进行中指令、保护规则与保底 |
+| `test/highlight.mjs` | 检索片段命中标记：预算、去重、大小写 |
+| `test/render-smoke.mjs` | 面板各分支渲染：空历史、无热上下文、策略不可用、建议与预览 |
+
+> 渲染类自检的价值在于**真的调用组件**。`node --check` 只证明能解析：一次 `cache` 写成未定义变量，语法全绿、探针也全绿（fixture 恰好没走那条分支），但真机上点开面板直接白屏。新增面板分支时，请让探针的 fixture 带上对应数据。
+
+```bash
 npm pack                # 打可分发的包
 ```
 
-提交前请让三处自检全绿。`trace.jsonl` 仅用于调试，不要提交。
+`trace.jsonl` 仅用于调试，不要提交。
 
 ---
 

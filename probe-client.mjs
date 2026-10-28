@@ -47,7 +47,13 @@ mod.apply(ctx)
 const badge = registrations.get('conversation.composer.dock')
 const panel = registrations.get('shell.overlay')
 
-const cache = { tokens: 208851, chars: 822592, events: 376, activity: 'recall', recalls: 3, at: 638, lastAt: Date.now() }
+// A cache WITH history: the trend-chart branch must actually execute, otherwise
+// a broken reference inside it stays hidden (a real failure: the panel silently
+// vanished because that branch shortened under a fixture without history).
+const cache = {
+  tokens: 208851, chars: 822592, events: 376, activity: 'recall', recalls: 3, at: 638, lastAt: Date.now(),
+  history: [{ time: Date.now() - 3000, percent: 22 }, { time: Date.now() - 1000, percent: 37 }],
+}
 const pressure = { projectedTokens: 45000, contextWindow: 900000 }
 const props = { useProjection: (key) => (key === 'contextAnchorCache' ? cache : pressure) }
 
@@ -77,6 +83,7 @@ const checks = [
   ['panel shows the degradation tier', panelText.includes('降智水平') && panelText.includes('5%')],
   ['panel renders a click-away backdrop', panelText.includes('"background":"transparent"')],
   ['panel keeps its footer note without settings', panelText.includes('缓存不进上下文窗口')],
+  ['panel draws the trend chart', panelText.includes('历史趋势') && panelText.includes('"svg"')],
 ]
 
 let failures = 0
