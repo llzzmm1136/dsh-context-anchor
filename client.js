@@ -55,6 +55,16 @@ window.__ModuleLoader__.load({
       thresholdHint: (p) => `仅本会话：热上下文达到 ${p}% 时，旧历史自动压缩进记忆；系统默认约 80%。`,
       recallLabel: '自动回忆',
       recallHint: '压缩后按当前指令自动检索被归档的内容。',
+      defaultsTitle: '全局默认',
+      defaultsAuto: '模式：自动',
+      defaultsCustom: (p) => `模式：自定义 ${p}%`,
+      defaultsRecallOn: '自动回忆：开启',
+      defaultsRecallOff: '自动回忆：关闭',
+      resetButton: '重置为全局',
+      resetHint: '删除本会话的自定义策略，恢复使用全局默认。',
+      exportButton: '导出',
+      importButton: '导入',
+      importHint: '从 JSON 文件导入设置（包含全局和所有会话策略）。',
       saveFailed: '保存失败，稍后重试。',
       policyUnavailable: '设置暂不可用：宿主还没有加载这一版，重启 DSH 后再打开面板。',
       noCompaction: '当前环境没有压缩服务，自定义阈值不会生效。',
@@ -99,6 +109,13 @@ window.__ModuleLoader__.load({
       if (percent < 50) return { label: copy.tierMild, tone: 'var(--dsw-alias-label-secondary)' };
       if (percent < 75) return { label: copy.tierModerate, tone: '#c08a3e' };
       return { label: copy.tierHeavy, tone: '#c2554d' };
+    }
+
+    /** Badge color grading by pressure: <60% green, 60-80% yellow, >80% orange. */
+    function badgeColorOf(percent) {
+      if (percent < 60) return { base: '#4a9d5f', hover: '#5cb574' }; // green
+      if (percent < 80) return { base: '#c08a3e', hover: '#d4a049' }; // yellow
+      return { base: '#c2554d', hover: '#d4675d' }; // orange
     }
 
     /** Disk-stack glyph: locally retained history. */
@@ -203,6 +220,9 @@ window.__ModuleLoader__.load({
           // read and write the policy of the conversation it was opened from.
           const sessionId = props.sessionId;
 
+          // Badge color by pressure tier: <60% green, 60-80% yellow, >80% orange
+          const badgeColors = badgeColorOf(pressure?.percent ?? 0);
+
           // Keep an open panel's figures live without re-opening it.
           React.useEffect(() => {
             if (store.state.open) store.publish({ cache: cached, pressure, sessionId });
@@ -244,9 +264,7 @@ window.__ModuleLoader__.load({
               padding: '1px 8px', border: 'none',
               background: hovered ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
               borderRadius: 'var(--dsw-radius-sm)', cursor: 'pointer',
-              color: hovered
-                ? 'var(--dsw-alias-label-secondary)'
-                : 'var(--dsw-alias-label-tertiary)',
+              color: hovered ? badgeColors.hover : badgeColors.base,
               fontFamily: 'inherit',
               fontSize: 'var(--dsh-content-font-size-secondary, 13px)',
               lineHeight: 'calc(20px + var(--dsh-content-font-delta-secondary, 0px))',
@@ -271,6 +289,8 @@ window.__ModuleLoader__.load({
           // Policy is read from the Host half on every open, so a second window
           // and a reloaded page always show what is actually in force.
           const [policy, setPolicy] = React.useState(null);
+          const [defaults, setDefaults] = React.useState(null);
+          const [perSession, setPerSession] = React.useState(false);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
 
@@ -289,6 +309,8 @@ window.__ModuleLoader__.load({
                 setPolicy(typeof data?.settings === 'object'
                   ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
                   : false);
+                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
+                setPerSession(data?.perSession === true);
                 setSaveError(false);
               })
               .catch(() => {
@@ -319,6 +341,8 @@ window.__ModuleLoader__.load({
                 setPolicy(typeof data?.settings === 'object'
                   ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
                   : next);
+                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
+                setPerSession(data?.perSession === true);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -332,6 +356,96 @@ window.__ModuleLoader__.load({
             setSaveError(false);
             clearTimeout(saveTimer.current);
             saveTimer.current = setTimeout(() => savePolicy(next), 220);
+          };
+
+          /** Delete per-session override and revert to global defaults. */
+          const deletePolicy = () => {
+            if (!perSession || !state.sessionId) return;
+            fetch(SETTINGS_API, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ action: 'delete', session: state.sessionId }),
+            })
+              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+              .then((data) => {
+                setPolicy(typeof data?.settings === 'object'
+                  ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
+                  : null);
+                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
+                setPerSession(data?.perSession === true);
+                setSaveError(false);
+              })
+              .catch(() => setSaveError(true));
+          };
+
+          /** Export all settings to a JSON file. */
+          const exportSettings = () => {
+            fetch(SETTINGS_API, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ action: 'export' }),
+            })
+              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+              .then((data) => {
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `context-anchor-settings-${new Date().toISOString().slice(0, 10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              })
+              .catch(() => setSaveError(true));
+          };
+
+          /** Import settings from a JSON file. */
+          const importSettings = () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'application/json';
+            input.onchange = () => {
+              const file = input.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                try {
+                  const data = JSON.parse(reader.result);
+                  fetch(SETTINGS_API, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ action: 'import', data }),
+                  })
+                    .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+                    .then(() => {
+                      // Reload current policy after import
+                      fetch(SETTINGS_API, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ action: 'read', session: state.sessionId }),
+                      })
+                        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+                        .then((data) => {
+                          setPolicy(typeof data?.settings === 'object'
+                            ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
+                            : null);
+                          setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
+                          setPerSession(data?.perSession === true);
+                          setSaveError(false);
+                        })
+                        .catch(() => setSaveError(true));
+                    })
+                    .catch(() => setSaveError(true));
+                } catch {
+                  setSaveError(true);
+                }
+              };
+              reader.readAsText(file);
+            };
+            input.click();
           };
 
           const cached = state.cache;
@@ -468,6 +582,46 @@ window.__ModuleLoader__.load({
               h('div', { style: { marginLeft: 'auto' } },
                 switchButton(policy.autoRecall, () => updatePolicy({ autoRecall: !policy.autoRecall })))),
             h('div', { style: hint }, copy.recallHint),
+            perSession && defaults && h('div', {
+              key: 'defaults',
+              style: {
+                marginTop: 12,
+                padding: '8px 10px',
+                borderRadius: 6,
+                background: 'var(--dsw-alias-fill-tertiary, rgba(0,0,0,.04))',
+                fontSize: 11,
+                lineHeight: '16px',
+                color: 'var(--dsw-alias-label-tertiary)',
+              },
+            },
+            h('div', { style: { fontWeight: 500, marginBottom: 4 } }, copy.defaultsTitle),
+            h('div', null, defaults.mode === 'auto' ? copy.defaultsAuto : copy.defaultsCustom(defaults.percent)),
+            h('div', null, defaults.autoRecall ? copy.defaultsRecallOn : copy.defaultsRecallOff)),
+            perSession && h('div', { key: 'reset', style: { marginTop: 10 } },
+              h('button', {
+                type: 'button',
+                onClick: deletePolicy,
+                style: {
+                  width: '100%',
+                  padding: '6px 10px',
+                  border: '1px solid var(--dsw-alias-stroke-secondary)',
+                  borderRadius: 6,
+                  background: 'transparent',
+                  color: 'var(--dsw-alias-label-secondary)',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  transition: 'background .12s, border-color .12s',
+                },
+                onMouseEnter: (e) => {
+                  e.currentTarget.style.background = 'var(--dsw-alias-interactive-bg-hover)';
+                  e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-primary)';
+                },
+                onMouseLeave: (e) => {
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-secondary)';
+                },
+              }, copy.resetButton),
+              h('div', { style: hint }, copy.resetHint)),
             saveError && h('div', {
               key: 'error',
               style: { ...hint, color: 'var(--dsw-alias-state-error-primary, #d54941)' },
@@ -475,6 +629,63 @@ window.__ModuleLoader__.load({
           policy === false && h('div', { key: 'policy-unavailable' },
             h('div', { style: DIVIDER }),
             h('div', { style: hint }, copy.policyUnavailable)),
+          h('div', {
+            key: 'export-import',
+            style: {
+              marginTop: 16,
+              paddingTop: 12,
+              borderTop: '1px solid var(--dsw-alias-stroke-tertiary)',
+              display: 'flex',
+              gap: 8,
+            },
+          },
+          h('button', {
+            type: 'button',
+            onClick: exportSettings,
+            style: {
+              flex: 1,
+              padding: '6px 10px',
+              border: '1px solid var(--dsw-alias-stroke-secondary)',
+              borderRadius: 6,
+              background: 'transparent',
+              color: 'var(--dsw-alias-label-secondary)',
+              fontSize: 12,
+              cursor: 'pointer',
+              transition: 'background .12s, border-color .12s',
+            },
+            onMouseEnter: (e) => {
+              e.currentTarget.style.background = 'var(--dsw-alias-interactive-bg-hover)';
+              e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-primary)';
+            },
+            onMouseLeave: (e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-secondary)';
+            },
+          }, copy.exportButton),
+          h('button', {
+            type: 'button',
+            onClick: importSettings,
+            style: {
+              flex: 1,
+              padding: '6px 10px',
+              border: '1px solid var(--dsw-alias-stroke-secondary)',
+              borderRadius: 6,
+              background: 'transparent',
+              color: 'var(--dsw-alias-label-secondary)',
+              fontSize: 12,
+              cursor: 'pointer',
+              transition: 'background .12s, border-color .12s',
+            },
+            onMouseEnter: (e) => {
+              e.currentTarget.style.background = 'var(--dsw-alias-interactive-bg-hover)';
+              e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-primary)';
+            },
+            onMouseLeave: (e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-secondary)';
+            },
+          }, copy.importButton)),
+          h('div', { style: hint }, copy.importHint),
           h('div', {
             style: {
               marginTop: 12, color: 'var(--dsw-alias-label-tertiary)',

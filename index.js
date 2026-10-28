@@ -1006,6 +1006,45 @@ function registerSettingsRoute(ctx) {
             sendJson(res, 200, settingsPayload(scope, sessionId))
             return
           }
+          if (isObject(body) && body.action === 'delete') {
+            // Delete per-session override; only valid when sessionId is present
+            if (typeof sessionId === 'string' && sessionId.length > 0) {
+              const { [sessionId]: _, ...rest } = sessionPolicies
+              sessionPolicies = rest
+              persistSettings(settings, sessionPolicies)
+              sendJson(res, 200, settingsPayload(scope, sessionId))
+            } else {
+              sendJson(res, 400, { error: 'delete requires a session id' })
+            }
+            return
+          }
+          if (isObject(body) && body.action === 'export') {
+            // Export complete settings: global + all session overrides
+            sendJson(res, 200, {
+              settings,
+              sessions: sessionPolicies,
+            })
+            return
+          }
+          if (isObject(body) && body.action === 'import') {
+            // Import complete settings; replaces everything
+            const imported = body.data
+            if (!isObject(imported)) {
+              sendJson(res, 400, { error: 'import data must be an object' })
+              return
+            }
+            settings = normalizeSettings(imported.settings ?? imported)
+            sessionPolicies = isObject(imported.sessions) ? imported.sessions : Object.create(null)
+            // Normalize each session policy
+            for (const sid in sessionPolicies) {
+              if (Object.prototype.hasOwnProperty.call(sessionPolicies, sid)) {
+                sessionPolicies[sid] = normalizeSettings(sessionPolicies[sid])
+              }
+            }
+            persistSettings(settings, sessionPolicies)
+            sendJson(res, 200, { success: true })
+            return
+          }
           const next = normalizeSettings(body)
           if (typeof sessionId === 'string' && sessionId.length > 0) {
             sessionPolicies = { ...sessionPolicies, [sessionId]: next }
