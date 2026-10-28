@@ -50,7 +50,7 @@ const DEFAULTS = {
 // a chosen percentage. The percentage is capped at the harness's own default
 // trigger (80%), because the built-in automatic compaction fires there first.
 
-const SETTINGS_DEFAULT = { mode: 'auto', percent: 70, autoRecall: true }
+const SETTINGS_DEFAULT = { mode: 'auto', percent: 70, autoRecall: true, protect: [] }
 const SETTINGS_MIN_PERCENT = 30
 const SETTINGS_MAX_PERCENT = 80
 const SETTINGS_PATH_SEGMENTS = ['storages', 'context-anchor', 'settings.json']
@@ -81,6 +81,32 @@ const clampPercent = (value) => Math.min(
   Math.max(SETTINGS_MIN_PERCENT, Number.isInteger(value) ? value : SETTINGS_DEFAULT.percent),
 )
 
+/** Protection needles are matched case-insensitively, but must stay short and few. */
+const PROTECT_MAX_ITEMS = 8
+const PROTECT_MAX_CHARS = 64
+
+/** Keep the protection list usable: trimmed, de-duplicated, bounded, no empties. */
+function normalizeProtect(raw) {
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(',')
+      : []
+  const seen = new Set()
+  const kept = []
+  for (const item of list) {
+    if (typeof item !== 'string') continue
+    const needle = item.trim().slice(0, PROTECT_MAX_CHARS)
+    if (needle.length === 0) continue
+    const key = needle.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    kept.push(needle)
+    if (kept.length >= PROTECT_MAX_ITEMS) break
+  }
+  return kept
+}
+
 /** Accept anything the client sends; every field has a safe fallback. */
 function normalizeSettings(raw) {
   const source = isObject(raw) ? raw : {}
@@ -88,6 +114,7 @@ function normalizeSettings(raw) {
     mode: source.mode === 'custom' ? 'custom' : 'auto',
     percent: clampPercent(source.percent),
     autoRecall: source.autoRecall !== false,
+    protect: normalizeProtect(source.protect),
   }
 }
 
@@ -856,6 +883,40 @@ function occupancyOf(scope, session) {
  * so the log still keeps everything and `context_recall` keeps reaching it.
  */
 /**
+ * Pull the cut back so nothing matching a protection needle is folded away.
+ *
+ * The first protected event inside the region becomes the new boundary, then
+ * the boundary retreats to the nearest turn start (never splitting a pair). A
+ * floor keeps the rule from paralyzing compaction: if honouring it would leave
+ * under a quarter of the original region to archive, the base cut stands — a
+ * protected phrase must not be able to disable compaction entirely.
+ */
+function shrinkForProtection(session, nodes, startIndex, endIndex, protect) {
+  if (!Array.isArray(protect) || protect.length === 0) return endIndex
+
+  const needles = protect.map((needle) => needle.toLowerCase()).filter((needle) => needle.length > 0)
+  if (needles.length === 0) return endIndex
+
+  let hitIndex = -1
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const text = eventText(session.eventAt(nodes[index])).toLowerCase()
+    if (text.length === 0) continue
+    if (needles.some((needle) => text.includes(needle))) {
+      hitIndex = index
+      break
+    }
+  }
+  if (hitIndex < 0) return endIndex
+
+  let next = hitIndex - 1
+  while (next > startIndex + 1 && session.eventAt(nodes[next + 1])?.type !== 'user/message') next -= 1
+
+  const floor = startIndex + Math.max(2, Math.floor((endIndex - startIndex) * 0.25))
+  if (next <= startIndex + 1 || next < floor) return endIndex
+  return next
+}
+
+/**
  * The region an early compaction folds when it fires: from the first non-system
  * node up to a turn boundary near 60% of the surface, never splitting a
  * tool-call/result pair and never swallowing the instruction in flight.
@@ -863,7 +924,7 @@ function occupancyOf(scope, session) {
  * Shared with the panel's preview, so what the panel promises is exactly what
  * the gate will do — the two must not drift apart.
  */
-function archiveRegionOf(session) {
+function archiveRegionOf(session, protect = []) {
   const surface = session?.surface
   if (surface === undefined || !Array.isArray(surface.nodes)) return { skip: 'no-surface' }
 
@@ -890,7 +951,10 @@ function archiveRegionOf(session) {
   if (endIndex <= startIndex + 1 || session.eventAt(nodes[endIndex + 1])?.type !== 'user/message') {
     return { skip: 'no-boundary', startIndex, lastUserIndex, endIndex }
   }
-  return { nodes, startIndex, endIndex }
+
+  const baseEnd = endIndex
+  endIndex = shrinkForProtection(session, nodes, startIndex, endIndex, protect)
+  return { nodes, startIndex, endIndex, baseEnd, protected: endIndex !== baseEnd }
 }
 
 async function compactEarly(scope, session, agent, signal) {
@@ -917,7 +981,7 @@ async function compactEarly(scope, session, agent, signal) {
   if (now - previous < 45_000) return traceCompaction({ skip: 'throttled', percent })
   compactionAttempts.set(session, now)
 
-  const region = archiveRegionOf(session)
+  const region = archiveRegionOf(session, policy.protect)
   if (region.skip !== undefined) return traceCompaction({ skip: region.skip, ...region })
   const { nodes, startIndex, endIndex } = region
 
@@ -941,8 +1005,8 @@ async function compactEarly(scope, session, agent, signal) {
  * occupancy that decides when it fires. Purely a read, so the panel can show it
  * on every poll.
  */
-function archivePreviewOf(scope, session) {
-  const region = archiveRegionOf(session)
+function archivePreviewOf(scope, session, protect = []) {
+  const region = archiveRegionOf(session, protect)
   if (region.skip !== undefined) return { available: false, reason: region.skip }
 
   const { nodes, startIndex, endIndex } = region
@@ -971,6 +1035,7 @@ function archivePreviewOf(scope, session) {
     from: seqs[0],
     to: seqs.at(-1),
     samples,
+    protected: region.protected === true,
     used: percent > 0 ? used : 0,
     window: percent > 0 ? window : 0,
     percent,
@@ -1043,13 +1108,15 @@ function settingsPayload(scope, sessionId) {
   const fromAgents = live.some((agent) => agent?.ctx?.get?.('compaction') !== undefined)
   const scoped = typeof sessionId === 'string' && sessionId.length > 0
   const session = liveSessionOf(scope, sessionId)
+  const policy = settingsFor(sessionId)
   return {
-    settings: settingsFor(sessionId),
+    settings: policy,
     defaults: settings,
     perSession: scoped,
     limits: { min: SETTINGS_MIN_PERCENT, max: SETTINGS_MAX_PERCENT },
+    protectLimits: { maxItems: PROTECT_MAX_ITEMS, maxChars: PROTECT_MAX_CHARS },
     compaction: fromAgents || scope.get('compaction') !== undefined,
-    preview: session === undefined ? undefined : archivePreviewOf(scope, session),
+    preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
   }
 }
 

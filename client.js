@@ -71,6 +71,11 @@ window.__ModuleLoader__.load({
       previewRange: (from, to, count, total) => `seq ${from}–${to} · ${count}/${total}`,
       previewAtThreshold: (p) => `占用到 ${p}% 时，上面这些会先归档成检查点。`,
       previewAuto: '自动模式由 harness 决定何时压缩；这是它将会处理的最早一段。',
+      previewProtected: '已按保护规则收缩，命中的内容留在表层。',
+      protectLabel: '保护内容',
+      protectNone: '未设置',
+      protectPlaceholder: '如 README.md, src/auth/',
+      protectHint: '逗号分隔，最多 8 条。命中这些词的那一段不会被折进检查点。',
       saveFailed: '保存失败，稍后重试。',
       policyUnavailable: '设置暂不可用：宿主还没有加载这一版，重启 DSH 后再打开面板。',
       noCompaction: '当前环境没有压缩服务，自定义阈值不会生效。',
@@ -390,6 +395,7 @@ window.__ModuleLoader__.load({
                 mode: next.mode,
                 percent: next.percent,
                 autoRecall: next.autoRecall,
+                protect: Array.isArray(next.protect) ? next.protect : [],
               }),
             })
               .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
@@ -646,6 +652,38 @@ window.__ModuleLoader__.load({
               h('div', { style: { marginLeft: 'auto' } },
                 switchButton(policy.autoRecall, () => updatePolicy({ autoRecall: !policy.autoRecall })))),
             h('div', { style: hint }, copy.recallHint),
+            h('div', { key: 'protect', style: { marginTop: 10 } },
+              h('div', { style: ROW },
+                h('span', { style: ROW_LABEL }, copy.protectLabel),
+                h('span', { style: { ...ROW_VALUE, fontSize: 11 } },
+                  (policy.protect?.length ?? 0) === 0
+                    ? copy.protectNone
+                    : `${policy.protect.length}`)),
+              h('input', {
+                // Remount when the normalised list changes, so the field always
+                // shows what the host actually stored rather than the raw typing.
+                key: `protect-${(policy.protect ?? []).join('|')}`,
+                type: 'text',
+                defaultValue: (policy.protect ?? []).join(', '),
+                placeholder: copy.protectPlaceholder,
+                'aria-label': copy.protectLabel,
+                onBlur: (event) => {
+                  const raw = String(event.currentTarget.value ?? '');
+                  const next = raw.split(',').map((part) => part.trim()).filter((part) => part.length > 0);
+                  if (next.join('|') === (policy.protect ?? []).join('|')) return;
+                  updatePolicy({ protect: next });
+                },
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') event.currentTarget.blur();
+                },
+                style: {
+                  boxSizing: 'border-box', width: '100%', marginTop: 4, padding: '4px 6px',
+                  border: '1px solid var(--dsw-alias-stroke-secondary)', borderRadius: 6,
+                  background: 'transparent', color: 'inherit', fontFamily: 'inherit',
+                  fontSize: 11, lineHeight: '16px',
+                },
+              }),
+              h('div', { style: hint }, copy.protectHint)),
             preview?.available === true && h('div', { key: 'preview', style: { marginTop: 12 } },
               h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 6 } },
                 h('span', { style: { color: 'var(--dsw-alias-label-tertiary)' } }, copy.previewTitle),
@@ -658,6 +696,9 @@ window.__ModuleLoader__.load({
               h('div', { style: hint }, policy.mode === 'custom'
                 ? copy.previewAtThreshold(policy.percent)
                 : copy.previewAuto),
+              preview.protected === true && h('div', {
+                style: { ...hint, color: 'var(--dsw-alias-label-secondary)' },
+              }, copy.previewProtected),
               Array.isArray(preview.samples) && preview.samples.map((sample) => h('div', {
                 key: `preview-${sample.seq}`,
                 style: {
