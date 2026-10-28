@@ -764,6 +764,31 @@ function kernelSearch(kernel, parsed, limit, keep) {
   }
 }
 
+/**
+ * Mark the needles that actually matched, so the eye lands on the reason a hit
+ * was returned. Plain text output, so the marker is a bracketing glyph rather
+ * than styling; the budget keeps a broad query from turning a snippet into
+ * confetti.
+ */
+function highlightSnippet(text, parsed) {
+  const budget = 5
+  const seen = new Set()
+  let out = text
+  let marks = 0
+  for (const needle of [...parsed.phrases, ...parsed.terms]) {
+    if (marks >= budget) break
+    if (typeof needle !== 'string' || needle.length === 0) continue
+    const key = needle.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const at = out.toLowerCase().indexOf(key)
+    if (at < 0) continue
+    out = `${out.slice(0, at)}«${out.slice(at, at + needle.length)}»${out.slice(at + needle.length)}`
+    marks += 1
+  }
+  return out
+}
+
 /** A window of the document centered on the first matched term or phrase. */
 function kernelSnippet(doc, parsed, width) {
   const lower = doc.lower
@@ -784,7 +809,8 @@ function kernelSnippet(doc, parsed, width) {
   if (at < 0) at = 0
   const start = at > Math.floor(width / 4) ? at - Math.floor(width / 4) : 0
   const end = start + width
-  return `${start > 0 ? '…' : ''}${doc.text.slice(start, end)}${end < doc.text.length ? '…' : ''}`
+  const raw = `${start > 0 ? '…' : ''}${doc.text.slice(start, end)}${end < doc.text.length ? '…' : ''}`
+  return highlightSnippet(raw, parsed)
 }
 
 
@@ -1042,8 +1068,17 @@ function archivePreviewOf(scope, session, protect = []) {
   }
 }
 
-/** Resolve the live session behind an id, if this host is currently driving it. */
-function liveSessionOf(scope, sessionId) {
+/**
+ * Size of the retrieval index for one session, for the panel's monitoring row.
+ * `kernelOf` advances the index to the session cursor, so this is exact at the
+ * moment it is read rather than a stale count.
+ */
+function indexStatsOf(session) {
+  const kernel = kernelOf(session)
+  return { docs: kernel.docs.size, terms: kernel.postings.size, at: kernel.seq }
+}
+
+/** Resolve the live session behind an id, if this host is currently driving it. */function liveSessionOf(scope, sessionId) {
   if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
   const agents = scope.get('agents')
   const live = typeof agents?.list === 'function' ? agents.list() : []
@@ -1116,6 +1151,7 @@ function settingsPayload(scope, sessionId) {
     limits: { min: SETTINGS_MIN_PERCENT, max: SETTINGS_MAX_PERCENT },
     protectLimits: { maxItems: PROTECT_MAX_ITEMS, maxChars: PROTECT_MAX_CHARS },
     sessionCount: Object.keys(sessionPolicies).length,
+    index: session === undefined ? undefined : indexStatsOf(session),
     compaction: fromAgents || scope.get('compaction') !== undefined,
     preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
   }
@@ -1231,6 +1267,7 @@ const RECALL_DESCRIPTION =
   '把一个检索指令交给本地检索内核：它在完整会话日志的倒排索引上做相关度排序（BM25），'
   + '覆盖更早的每条用户消息、助手消息和工具结果，以及已被压缩摘要掉的历史，返回原文片段与 seq 编号。'
   + '支持 "精确短语"、-排除词，以及 type:user|assistant|tool|call、tool:read、file:Temp、after:120、before:300 这类过滤。'
+  + '片段中被 «» 括起的是命中的词，不是原文的一部分。'
   + '需要本会话早先的事实、决定、路径、命令或原话时用它，不要猜。'
 
 const EXPAND_DESCRIPTION =

@@ -79,6 +79,14 @@ window.__ModuleLoader__.load({
       protectNone: '未设置',
       protectPlaceholder: '如 README.md, src/auth/',
       protectHint: '逗号分隔，最多 8 条。命中这些词的那一段不会被折进检查点。',
+      indexLabel: '检索索引',
+      indexValue: (docs, terms) => `${docs} 篇 · ${terms} 词条`,
+      adviceTitle: '建议',
+      adviceNoCompaction: '启用 @deepseek-ai/dsh-compaction-basic 后，自定义阈值才会生效。',
+      adviceAutoHigh: (p) => `占用已到 ${p}%，切到自定义 60% 可提前压缩，减少降智。`,
+      adviceCustomLow: (p, t) => `当前 ${p}%，离 ${t}% 还远；这个设置偏保守，会话会一直很满。`,
+      adviceNoRecall: '检索索引已建好但还没被用过：问模型一件早先的事就能验证记忆。',
+      adviceProtect: '会话已很长：把关键文件路径填进保护内容，压缩时它们会留在表层。',
       saveFailed: '保存失败，稍后重试。',
       policyUnavailable: '设置暂不可用：宿主还没有加载这一版，重启 DSH 后再打开面板。',
       noCompaction: '当前环境没有压缩服务，自定义阈值不会生效。',
@@ -355,6 +363,7 @@ window.__ModuleLoader__.load({
           const [perSession, setPerSession] = React.useState(false);
           const [preview, setPreview] = React.useState(null);
           const [sessionCount, setSessionCount] = React.useState(0);
+          const [indexStats, setIndexStats] = React.useState(null);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
 
@@ -377,6 +386,7 @@ window.__ModuleLoader__.load({
                 setPerSession(data?.perSession === true);
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
+                setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setSaveError(false);
               })
               .catch(() => {
@@ -423,6 +433,7 @@ window.__ModuleLoader__.load({
                 setPerSession(data?.perSession === true);
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
+                setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -456,6 +467,7 @@ window.__ModuleLoader__.load({
                 setPerSession(data?.perSession === true);
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
+                setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -480,6 +492,7 @@ window.__ModuleLoader__.load({
                 setPerSession(data?.perSession === true);
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
+                setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -597,6 +610,19 @@ window.__ModuleLoader__.load({
             onToggle,
           });
 
+          /** One concrete suggestion at a time; saying nothing beats saying "fine". */
+          const advice = (() => {
+            if (policy === null || policy === false || !known) return null;
+            if (policy.compaction === false) return copy.adviceNoCompaction;
+            if (policy.mode === 'auto' && percent >= 70) return copy.adviceAutoHigh(percent);
+            if (policy.mode === 'custom' && percent < policy.percent - 20) {
+              return copy.adviceCustomLow(percent, policy.percent);
+            }
+            if ((cached.recalls ?? 0) === 0 && (indexStats?.docs ?? 0) > 200) return copy.adviceNoRecall;
+            if ((policy.protect?.length ?? 0) === 0 && (indexStats?.docs ?? 0) > 1500) return copy.adviceProtect;
+            return null;
+          })();
+
           return h('div', null,
           h('div', {
             key: 'backdrop',
@@ -635,6 +661,9 @@ window.__ModuleLoader__.load({
             row('content', copy.contentLabel, copy.contentValue({ chars: compact(cached.chars), events: cached.events })),
             typeof cached.recalls === 'number'
               ? row('recalls', copy.recallsLabel, copy.recallsValue(cached.recalls))
+              : null,
+            indexStats && typeof indexStats.docs === 'number'
+              ? row('index', copy.indexLabel, copy.indexValue(indexStats.docs, indexStats.terms ?? 0))
               : null),
           h('div', { style: DIVIDER }),
           h('div', { style: { display: 'grid', gap: 2 } },
@@ -881,6 +910,14 @@ window.__ModuleLoader__.load({
             },
           }, copy.clearSessionsButton(sessionCount)),
           sessionCount > 0 && h('div', { style: hint }, copy.clearSessionsHint),
+          advice !== null && h('div', {
+            key: 'advice',
+            style: {
+              marginTop: 12, padding: '6px 8px', borderRadius: 6,
+              background: 'var(--dsw-alias-fill-tertiary, rgba(0,0,0,.04))',
+              color: 'var(--dsw-alias-label-tertiary)', fontSize: 11, lineHeight: '16px',
+            },
+          }, `${copy.adviceTitle}：${advice}`),
           h('div', {
             style: {
               marginTop: 12, color: 'var(--dsw-alias-label-tertiary)',
