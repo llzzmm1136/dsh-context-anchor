@@ -1,0 +1,7 @@
+- insert:
+    - id: context-anchor
+      name: '@local/dsh-context-anchor'
+      config:
+        recentUserMessages: 4
+        recentFiles: 10
+        maxAnchorChars: 1600

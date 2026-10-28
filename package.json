@@ -1,0 +1,36 @@
+{
+  "name": "@local/dsh-context-anchor",
+  "version": "1.2.1",
+  "private": true,
+  "type": "module",
+  "description": "每一步都从完整会话日志重建上下文锚点，并注册带倒排索引的全量历史检索内核，让超长会话在压缩之后仍保持注意力与记忆。",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "license": "MIT"
+}
