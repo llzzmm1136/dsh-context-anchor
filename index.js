@@ -55,6 +55,7 @@ const SETTINGS_MIN_PERCENT = 30
 const SETTINGS_MAX_PERCENT = 80
 const SETTINGS_PATH_SEGMENTS = ['storages', 'context-anchor', 'settings.json']
 const SETTINGS_ROUTE = '/api/dsh-context-anchor'
+const MAX_HISTORY_POINTS = 50
 
 /** Global defaults for this host process; replaced wholesale on every save. */
 let settings = { ...SETTINGS_DEFAULT }
@@ -71,6 +72,9 @@ const compactionAttempts = new WeakMap()
 
 /** Last auto-recall result per session, keyed by the log/surface cursor it was derived from. */
 const recallCache = new WeakMap()
+
+/** History of cache pressure over time, per session. Each entry: { time: timestamp, percent: number }. */
+const pressureHistory = new WeakMap()
 
 const clampPercent = (value) => Math.min(
   SETTINGS_MAX_PERCENT,
@@ -277,20 +281,35 @@ function registerCacheProjection(ctx) {
         activity: 'idle',
         at: -1,
         lastAt: 0,
+        history: [],
       }),
       apply: (state, event) => {
         const activity = activityOf(state.activity ?? 'idle', event)
         const priced = priceEvent(event)
         if (priced === null && activity === state.activity) return state
         const recall = RECALL_TOOLS[event.data?.name] === 'recall' ? 1 : 0
+        const nextTokens = (state.tokens ?? 0) + (priced?.tokens ?? 0)
+        const nextChars = (state.chars ?? 0) + (priced?.chars ?? 0)
+        
+        // Record history point when tokens change
+        let nextHistory = state.history ?? []
+        if (priced !== null && event.time) {
+          const percent = Math.round((nextTokens / 1_000_000) * 100)
+          nextHistory = [...nextHistory, { time: event.time, percent }]
+          if (nextHistory.length > MAX_HISTORY_POINTS) {
+            nextHistory = nextHistory.slice(-MAX_HISTORY_POINTS)
+          }
+        }
+        
         return {
-          tokens: (state.tokens ?? 0) + (priced?.tokens ?? 0),
-          chars: (state.chars ?? 0) + (priced?.chars ?? 0),
+          tokens: nextTokens,
+          chars: nextChars,
           events: (state.events ?? 0) + (priced === null ? 0 : 1),
           recalls: (state.recalls ?? 0) + recall,
           activity,
           at: event.seq,
           lastAt: event.time ?? state.lastAt ?? 0,
+          history: nextHistory,
         }
       },
       wire: {
@@ -303,6 +322,7 @@ function registerCacheProjection(ctx) {
           activity: state.activity ?? 'idle',
           at: state.at ?? -1,
           lastAt: state.lastAt ?? 0,
+          history: state.history ?? [],
         }),
       },
     })

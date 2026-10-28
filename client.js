@@ -65,6 +65,8 @@ window.__ModuleLoader__.load({
       exportButton: '导出',
       importButton: '导入',
       importHint: '从 JSON 文件导入设置（包含全局和所有会话策略）。',
+      trendTitle: '历史趋势',
+      trendEmpty: '暂无历史数据。',
       saveFailed: '保存失败，稍后重试。',
       policyUnavailable: '设置暂不可用：宿主还没有加载这一版，重启 DSH 后再打开面板。',
       noCompaction: '当前环境没有压缩服务，自定义阈值不会生效。',
@@ -116,6 +118,54 @@ window.__ModuleLoader__.load({
       if (percent < 60) return { base: '#4a9d5f', hover: '#5cb574' }; // green
       if (percent < 80) return { base: '#c08a3e', hover: '#d4a049' }; // yellow
       return { base: '#c2554d', hover: '#d4675d' }; // orange
+    }
+
+    /** Render a mini trend chart from history data points. */
+    function renderTrendChart(history) {
+      if (!Array.isArray(history) || history.length === 0) {
+        return h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', textAlign: 'center', padding: '12px 0' } }, copy.trendEmpty)
+      }
+
+      const width = 240
+      const height = 60
+      const padding = { top: 4, right: 4, bottom: 4, left: 4 }
+      const chartWidth = width - padding.left - padding.right
+      const chartHeight = height - padding.top - padding.bottom
+
+      // Find min/max for Y axis (percent range)
+      const percents = history.map(p => p.percent)
+      const minPercent = Math.max(0, Math.min(...percents) - 5)
+      const maxPercent = Math.min(100, Math.max(...percents) + 5)
+      const rangePercent = maxPercent - minPercent || 1
+
+      // Map data points to SVG coordinates
+      const points = history.map((point, i) => {
+        const x = padding.left + (i / (history.length - 1 || 1)) * chartWidth
+        const y = padding.top + chartHeight - ((point.percent - minPercent) / rangePercent) * chartHeight
+        return { x, y, percent: point.percent }
+      })
+
+      // Build polyline path
+      const pathData = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+
+      // Color based on latest percent
+      const latestPercent = percents[percents.length - 1] || 0
+      const color = latestPercent < 60 ? '#4a9d5f' : latestPercent < 80 ? '#c08a3e' : '#c2554d'
+
+      return h('svg', {
+        width,
+        height,
+        viewBox: `0 0 ${width} ${height}`,
+        style: { display: 'block', margin: '8px auto 0' },
+      },
+      h('path', {
+        d: pathData,
+        fill: 'none',
+        stroke: color,
+        'stroke-width': 1.5,
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+      }))
     }
 
     /** Disk-stack glyph: locally retained history. */
@@ -544,6 +594,12 @@ window.__ModuleLoader__.load({
               background: 'var(--dsw-alias-interactive-bg-hover)',
             },
           }, h('div', { style: { height: '100%', width: `${percent}%`, background: tier.tone } })),
+          known && cache?.history?.length > 0 && h('div', {
+            key: 'trend',
+            style: { marginTop: 12 },
+          },
+          h('div', { style: { fontSize: 11, fontWeight: 500, color: 'var(--dsw-alias-label-secondary)', marginBottom: 4 } }, copy.trendTitle),
+          renderTrendChart(cache.history)),
           policy !== null && policy !== false && h('div', { key: 'policy' },
             h('div', { style: DIVIDER }),
             h('div', { style: ROW },
