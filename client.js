@@ -51,8 +51,8 @@ window.__ModuleLoader__.load({
       level: '智力水平',
       auto: '自动',
       custom: '自定义',
-      autoHint: '跟随系统默认：热上下文接近上限时自动压缩。',
-      thresholdHint: (p) => `热上下文达到 ${p}% 时，旧历史自动压缩进记忆；系统默认约 80%。`,
+      autoHint: '本会话跟随系统默认：热上下文接近上限时自动压缩。',
+      thresholdHint: (p) => `仅本会话：热上下文达到 ${p}% 时，旧历史自动压缩进记忆；系统默认约 80%。`,
       recallLabel: '自动回忆',
       recallHint: '压缩后按当前指令自动检索被归档的内容。',
       saveFailed: '保存失败，稍后重试。',
@@ -126,7 +126,7 @@ window.__ModuleLoader__.load({
      * rect and the latest projections here and the panel subscribes.
      */
     const store = {
-      state: { open: false, left: 12, bottom: 80, cache: undefined, pressure: undefined },
+      state: { open: false, left: 12, bottom: 80, cache: undefined, pressure: undefined, sessionId: undefined },
       listeners: new Set(),
       subscribe(listener) {
         store.listeners.add(listener);
@@ -199,11 +199,14 @@ window.__ModuleLoader__.load({
           const cached = read(CACHE);
           const pressure = read(PRESSURE);
           const [hovered, hoverProps] = useHover();
+          // The dock is a session-scoped slot: this id is what the panel uses to
+          // read and write the policy of the conversation it was opened from.
+          const sessionId = props.sessionId;
 
           // Keep an open panel's figures live without re-opening it.
           React.useEffect(() => {
-            if (store.state.open) store.publish({ cache: cached, pressure });
-          }, [cached, pressure]);
+            if (store.state.open) store.publish({ cache: cached, pressure, sessionId });
+          }, [cached, pressure, sessionId]);
 
           if (cached === undefined || cached === null || !(cached.events > 0)) return null;
 
@@ -231,6 +234,7 @@ window.__ModuleLoader__.load({
                 open: true,
                 cache: cached,
                 pressure,
+                sessionId,
                 left: Math.max(12, Math.min(rect.left, viewportWidth - width - 12)),
                 bottom: viewportHeight - rect.top + 8,
               });
@@ -277,7 +281,7 @@ window.__ModuleLoader__.load({
               method: 'POST',
               credentials: 'same-origin',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ action: 'read' }),
+              body: JSON.stringify({ action: 'read', session: state.sessionId }),
             })
               .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
               .then((data) => {
@@ -304,6 +308,7 @@ window.__ModuleLoader__.load({
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
                 action: 'save',
+                session: state.sessionId,
                 mode: next.mode,
                 percent: next.percent,
                 autoRecall: next.autoRecall,

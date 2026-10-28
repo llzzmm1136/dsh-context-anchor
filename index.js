@@ -56,8 +56,15 @@ const SETTINGS_MAX_PERCENT = 80
 const SETTINGS_PATH_SEGMENTS = ['storages', 'context-anchor', 'settings.json']
 const SETTINGS_ROUTE = '/api/dsh-context-anchor'
 
-/** Live settings for this host process; replaced wholesale on every save. */
+/** Global defaults for this host process; replaced wholesale on every save. */
 let settings = { ...SETTINGS_DEFAULT }
+
+/**
+ * Per-session overrides, keyed by session id. The panel edits the session it is
+ * attached to; a session without an override follows the global default, so a
+ * fresh conversation never inherits a threshold tuned somewhere else.
+ */
+let sessionPolicies = Object.create(null)
 
 /** Per-session throttle so a failed or fruitless compaction cannot retry every step. */
 const compactionAttempts = new WeakMap()
@@ -80,6 +87,24 @@ function normalizeSettings(raw) {
   }
 }
 
+/** A session id, whichever shape this runtime hands over. */
+function sessionIdOf(session) {
+  if (typeof session?.id === 'string' && session.id.length > 0) return session.id
+  if (typeof session?.sessionId === 'string' && session.sessionId.length > 0) return session.sessionId
+  return undefined
+}
+
+/**
+ * The policy in force for one session: its own override when it has one, else
+ * the global default. Everything that acts on a session — the compaction gate,
+ * the auto-recall block, the panel — goes through here, so one conversation's
+ * threshold can never leak into another's.
+ */
+function settingsFor(sessionId) {
+  const patch = typeof sessionId === 'string' ? sessionPolicies[sessionId] : undefined
+  return normalizeSettings(isObject(patch) ? { ...settings, ...patch } : settings)
+}
+
 /** `$DSH_HOME/storages/context-anchor/settings.json`, matching the host home layout. */
 function settingsFile() {
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
@@ -88,19 +113,26 @@ function settingsFile() {
 
 /** Load the persisted policy once per host process; a missing or broken file means defaults. */
 function loadSettings() {
+  sessionPolicies = Object.create(null)
   try {
-    settings = normalizeSettings(JSON.parse(readFileSync(settingsFile(), 'utf8')))
+    const raw = JSON.parse(readFileSync(settingsFile(), 'utf8'))
+    settings = normalizeSettings(raw)
+    if (isObject(raw?.sessions)) {
+      for (const [key, value] of Object.entries(raw.sessions)) {
+        if (isObject(value)) sessionPolicies[key] = normalizeSettings({ ...settings, ...value })
+      }
+    }
   } catch {
     settings = { ...SETTINGS_DEFAULT }
   }
 }
 
-/** Persist the policy atomically (write-then-rename) so a crash cannot leave half a file. */
-function persistSettings(next) {
+/** Persist global defaults plus every per-session override, atomically. */
+function persistSettings(next, policies = sessionPolicies) {
   const target = settingsFile()
   mkdirSync(dirname(target), { recursive: true })
   const temporary = `${target}.tmp`
-  writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  writeFileSync(temporary, `${JSON.stringify({ ...next, sessions: policies }, null, 2)}\n`, 'utf8')
   renameSync(temporary, target)
 }
 
@@ -418,7 +450,7 @@ function renderAnchor(session, config) {
   // archived excerpts that match what is being worked on right now — without
   // waiting for the model to decide to search, and without the user asking.
   const offSurface = session.seq - (session.surface?.nodes?.length ?? 0)
-  if (settings.autoRecall && (state.compactions > 0 || offSurface > 60)) {
+  if (settingsFor(sessionIdOf(session)).autoRecall && (state.compactions > 0 || offSurface > 60)) {
     try {
       const recalled = recallArchived(session, state, config)
       if (recalled.length > 0) lines.push(recalled)
@@ -804,7 +836,10 @@ function occupancyOf(scope, session) {
  * so the log still keeps everything and `context_recall` keeps reaching it.
  */
 async function compactEarly(scope, session, agent, signal) {
-  if (settings.mode !== 'custom') return traceCompaction({ skip: 'mode', mode: settings.mode })
+  // Read the policy for *this* session: a threshold set in one conversation
+  // must not decide when another one condenses.
+  const policy = settingsFor(sessionIdOf(session))
+  if (policy.mode !== 'custom') return traceCompaction({ skip: 'mode', mode: policy.mode })
   if (signal?.aborted) return traceCompaction({ skip: 'aborted' })
 
   // Resolve the service from the composition that owns it: the preset mounts it,
@@ -817,7 +852,7 @@ async function compactEarly(scope, session, agent, signal) {
     return traceCompaction({ skip: 'no-window', used, window })
   }
   const percent = Math.round((used / window) * 100)
-  if (percent < settings.percent) return traceCompaction({ skip: 'below', percent, threshold: settings.percent })
+  if (percent < policy.percent) return traceCompaction({ skip: 'below', percent, threshold: policy.percent })
 
   const now = Date.now()
   const previous = compactionAttempts.get(session) ?? 0
@@ -857,10 +892,10 @@ async function compactEarly(scope, session, agent, signal) {
       compacted: result.shadowedSeqs.length,
       tokens: result.shadowedTokenCount,
       percent,
-      threshold: settings.percent,
+      threshold: policy.percent,
     })
   } catch (error) {
-    traceCompaction({ failed: String(error), percent, threshold: settings.percent })
+    traceCompaction({ failed: String(error), percent, threshold: policy.percent })
     throw error
   }
 }
@@ -910,16 +945,19 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
-/** What the panel needs to render the settings block. */
-function settingsPayload(scope) {
+/** What the panel needs to render the settings block for one session. */
+function settingsPayload(scope, sessionId) {
   // A preset-mounted compaction backend is invisible from the profile root, so
   // ask the live agents too: whichever composition owns a session owns the
   // service that can actually compact it.
   const agents = scope.get('agents')
   const live = typeof agents?.list === 'function' ? agents.list() : []
   const fromAgents = live.some((agent) => agent?.ctx?.get?.('compaction') !== undefined)
+  const scoped = typeof sessionId === 'string' && sessionId.length > 0
   return {
-    settings,
+    settings: settingsFor(sessionId),
+    defaults: settings,
+    perSession: scoped,
     limits: { min: SETTINGS_MIN_PERCENT, max: SETTINGS_MAX_PERCENT },
     compaction: fromAgents || scope.get('compaction') !== undefined,
   }
@@ -947,8 +985,11 @@ function registerSettingsRoute(ctx) {
           sendJson(res, 404, { error: 'unknown method' })
           return
         }
+        // The panel names the session it is attached to; without one the route
+        // reads and writes the global default.
+        const querySession = url.searchParams.get('session') ?? undefined
         if (req.method === 'GET') {
-          sendJson(res, 200, settingsPayload(scope))
+          sendJson(res, 200, settingsPayload(scope, querySession))
           return
         }
         if (req.method !== 'POST') {
@@ -957,15 +998,22 @@ function registerSettingsRoute(ctx) {
         }
         try {
           const body = await readJsonBody(req)
+          const sessionId = typeof body?.session === 'string' && body.session.length > 0
+            ? body.session
+            : querySession
           // POST carries the page's Origin, so the panel reads through POST too.
           if (isObject(body) && body.action === 'read') {
-            sendJson(res, 200, settingsPayload(scope))
+            sendJson(res, 200, settingsPayload(scope, sessionId))
             return
           }
           const next = normalizeSettings(body)
-          persistSettings(next)
-          settings = next
-          sendJson(res, 200, settingsPayload(scope))
+          if (typeof sessionId === 'string' && sessionId.length > 0) {
+            sessionPolicies = { ...sessionPolicies, [sessionId]: next }
+          } else {
+            settings = next
+          }
+          persistSettings(settings, sessionPolicies)
+          sendJson(res, 200, settingsPayload(scope, sessionId))
         } catch (error) {
           scope.logger?.warn?.(`context-anchor: settings save failed: ${String(error)}`)
           sendJson(res, 500, { error: 'settings could not be saved' })

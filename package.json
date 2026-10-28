@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-context-anchor",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "description": "每一步都从完整会话日志重建上下文锚点，并注册带倒排索引的全量历史检索内核，让超长会话在压缩之后仍保持注意力与记忆。",
