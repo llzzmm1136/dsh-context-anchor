@@ -19,8 +19,12 @@ globalThis.clearInterval = () => {}
 await import('./client.js')
 
 const el = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() })
+class FakeComponent {
+  constructor(props) { this.props = props; this.state = null; }
+}
 const React = {
   createElement: el,
+  Component: FakeComponent,
   useState: (initial) => [initial, () => {}],
   useRef: (initial) => ({ current: initial }),
   useEffect: () => {},
@@ -66,7 +70,14 @@ button.props.onClick({
   currentTarget: { getBoundingClientRect: () => ({ left: 400, top: 820, width: 140, height: 22 }) },
 })
 
-const panelTree = panel.component({})
+// The panel is registered as an error-boundary class. Mount it the way React
+// would (instantiate, then render), then resolve the inner CachePanel element.
+const mountPanel = (props = {}) => {
+  const instance = new panel.component(props)
+  return instance.render()
+}
+const panelEl = mountPanel({})
+const panelTree = panelEl.type(panelEl.props ?? {})
 const panelText = JSON.stringify(panelTree)
 
 const checks = [
@@ -84,7 +95,14 @@ const checks = [
   ['panel renders a click-away backdrop', panelText.includes('"background":"transparent"')],
   ['panel keeps its footer note without settings', panelText.includes('缓存不进上下文窗口')],
   ['panel draws the trend chart', panelText.includes('历史趋势') && panelText.includes('"svg"')],
+  ['panel carries the version marker', panelText.includes('v1.6.2')],
 ]
+
+// The boundary must turn a crash into visible text, not a deactivated slot.
+const boundaryInstance = new panel.component({})
+boundaryInstance.state = panel.component.getDerivedStateFromError(new Error('probe-crash'))
+const boundaryTree = JSON.stringify(boundaryInstance.render())
+checks.push(['boundary renders the crash as text', boundaryTree.includes('面板渲染失败') && boundaryTree.includes('probe-crash')])
 
 let failures = 0
 for (const [label, ok] of checks) {

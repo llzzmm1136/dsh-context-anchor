@@ -1200,6 +1200,16 @@ function registerSettingsRoute(ctx) {
             sendJson(res, 200, settingsPayload(scope, sessionId))
             return
           }
+          if (isObject(body) && body.action === 'client-error') {
+            // The page's only channel back here: a crashed slot entry reports
+            // itself instead of failing as a silent dead click.
+            traceCompaction({
+              clientError: String(body.message ?? 'unknown').slice(0, 300),
+              stack: String(body.stack ?? '').slice(0, 1500),
+            })
+            sendJson(res, 200, { ok: true })
+            return
+          }
           if (isObject(body) && body.action === 'delete') {
             // Delete per-session override; only valid when sessionId is present
             if (typeof sessionId === 'string' && sessionId.length > 0) {

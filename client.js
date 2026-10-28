@@ -25,6 +25,8 @@ window.__ModuleLoader__.load({
     const PRESSURE = 'contextPressure';
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
+    /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
+    const CLIENT_VERSION = 'v1.6.2';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -311,6 +313,7 @@ window.__ModuleLoader__.load({
             'aria-haspopup': 'dialog',
             'aria-expanded': store.state.open,
             'data-context-anchor-cache': String(cached.tokens),
+            title: `上下文锚点 ${CLIENT_VERSION}`,
             ...hoverProps,
             onClick: (event) => {
               if (store.state.open) {
@@ -653,7 +656,7 @@ window.__ModuleLoader__.load({
             },
           },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-            h('span', { style: { color: 'var(--dsw-alias-label-tertiary)' } }, copy.panelTitle),
+            h('span', { style: { color: 'var(--dsw-alias-label-tertiary)' } }, `${copy.panelTitle} · ${CLIENT_VERSION}`),
             h('span', {
               style: {
                 marginLeft: 'auto', color: 'var(--dsw-alias-label-primary)',
@@ -945,6 +948,60 @@ window.__ModuleLoader__.load({
           }
         }
 
+        /**
+         * The slot system deactivates an occupant whose render crashes, and to
+         * the user that reads as a dead click. Catch the crash here instead:
+         * show the error in place and report it to the Host trace, where the
+         * exact message can be read back.
+         */
+        class PanelBoundary extends React.Component {
+          constructor(props) {
+            super(props);
+            this.state = { error: null };
+          }
+
+          static getDerivedStateFromError(error) {
+            return { error };
+          }
+
+          componentDidCatch(error) {
+            this.report(error);
+          }
+
+          report(error) {
+            try {
+              fetch(SETTINGS_API, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  action: 'client-error',
+                  message: error && error.message ? error.message : String(error),
+                  stack: error && error.stack ? String(error.stack).slice(0, 1500) : '',
+                }),
+              }).catch(() => {});
+            } catch { /* reporting must never be the crash */ }
+          }
+
+          render() {
+            if (this.state.error === null) return h(CachePanel);
+            const message = this.state.error && this.state.error.message
+              ? this.state.error.message
+              : String(this.state.error);
+            return h('div', {
+              role: 'alert',
+              style: {
+                position: 'fixed', left: 16, bottom: 64, zIndex: 1,
+                boxSizing: 'border-box', maxWidth: 340, padding: 12,
+                borderRadius: 'var(--dsw-radius-lg)', boxShadow: 'var(--dsw-elevation-prominent)',
+                backgroundColor: 'var(--dsw-alias-bg-base)',
+                color: 'var(--dsw-alias-state-error-primary, #d54941)',
+                fontSize: 12, lineHeight: '18px',
+              },
+            }, COPY.renderFailed(message));
+          }
+        }
+
         ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
           name: 'conversation.composer.dock',
           id: 'context-anchor-cache',
@@ -955,7 +1012,7 @@ window.__ModuleLoader__.load({
           name: 'shell.overlay',
           id: 'context-anchor-panel',
           order: 90,
-        }, CachePanel));
+        }, PanelBoundary));
       },
     };
   },

@@ -23,6 +23,9 @@ const React = {
   createElement(type, props, ...children) {
     return { type, props: props ?? {}, children }
   },
+  Component: class FakeComponent {
+    constructor(props) { this.props = props; this.state = null; }
+  },
   useState(init) {
     const value = hookIndex < hookValues.length && hookValues[hookIndex] !== undefined
       ? hookValues[hookIndex]
@@ -117,7 +120,21 @@ const preview = {
 function render(Component, values, props = {}) {
   hookValues = values
   hookIndex = 0
+  if (Component.prototype && typeof Component.prototype.render === 'function') {
+    const instance = new Component(props)
+    return instance.render()
+  }
   return Component(props)
+}
+
+/**
+ * The overlay slot registers an error-boundary class wrapping CachePanel:
+ * mount the boundary, then resolve the inner panel element it returns.
+ */
+function renderPanel(values) {
+  const outer = render(panel, values)
+  if (outer === null || outer === undefined || typeof outer.type !== 'function') return outer
+  return render(outer.type, values, outer.props ?? {})
 }
 
 /** Walk a rendered tree, descending into arrays and node children alike. */
@@ -167,7 +184,7 @@ const tries = (label, fn) => {
 
 // 1) Full panel: every block present, including the trend chart and preview.
 {
-  const run = tries('panel (full)', () => render(panel, [
+  const run = tries('panel (full)', () => renderPanel([
     openState, policy, { mode: 'auto', percent: 60, autoRecall: true, protect: [] },
     true, preview, 3, { docs: 1200, terms: 8000, at: 900 }, false,
   ]))
@@ -188,13 +205,13 @@ const tries = (label, fn) => {
 
 // 2) Closed panel renders nothing at all.
 {
-  const run = tries('panel (closed)', () => render(panel, [{ ...openState, open: false, cache: undefined }]))
+  const run = tries('panel (closed)', () => renderPanel([{ ...openState, open: false, cache: undefined }]))
   if (run.ok) check('closed panel returns null', run.value === null || run.value === undefined)
 }
 
 // 3) Empty history must not throw and must not draw a chart.
 {
-  const run = tries('panel (no history)', () => render(panel, [
+  const run = tries('panel (no history)', () => renderPanel([
     { ...openState, cache: { ...cache, history: [] }, pressure: undefined },
     policy, null, false, undefined, 0, undefined, false,
   ]))
@@ -206,7 +223,7 @@ const tries = (label, fn) => {
 
 // 4) Policy unavailable: the panel still renders with the explanatory line.
 {
-  const run = tries('panel (policy unavailable)', () => render(panel, [
+  const run = tries('panel (policy unavailable)', () => renderPanel([
     openState, false, null, false, undefined, 0, undefined, false,
   ]))
   if (run.ok) check('policy-unavailable still renders', run.value !== null)
@@ -214,10 +231,22 @@ const tries = (label, fn) => {
 
 // 5) Unknown pressure: no chart, no crash.
 {
-  const run = tries('panel (unknown pressure)', () => render(panel, [
+  const run = tries('panel (unknown pressure)', () => renderPanel([
     { ...openState, pressure: undefined }, policy, null, true, undefined, 0, undefined, false,
   ]))
   if (run.ok) check('unknown pressure renders', run.value !== null)
+}
+
+// 5b) The boundary turns a crash into visible text instead of a dead slot.
+{
+  const run = tries('boundary (error path)', () => {
+    const instance = new panel({})
+    instance.state = panel.getDerivedStateFromError(new Error('boundary-boom'))
+    return instance.render()
+  })
+  if (run.ok) {
+    check('boundary shows the crash text', hasText(run.value, '面板渲染失败') && hasText(run.value, 'boundary-boom'))
+  }
 }
 
 // 6) The dock badge renders its label and cache size.
@@ -244,7 +273,7 @@ const tries = (label, fn) => {
 
 // 8) Advice appears when memory has been indexed but never used.
 {
-  const run = tries('panel (advice)', () => render(panel, [
+  const run = tries('panel (advice)', () => renderPanel([
     { ...openState, cache: { ...cache, recalls: 0 } },
     policy, null, false, preview, 0, { docs: 400, terms: 900, at: 900 }, false,
   ]))
@@ -256,12 +285,12 @@ const tries = (label, fn) => {
 
 // 9) The protection note shows only when protection actually applied.
 {
-  const protectedRun = tries('panel (protected)', () => render(panel, [
+  const protectedRun = tries('panel (protected)', () => renderPanel([
     openState, policy, null, false, { ...preview, protected: true }, 0, undefined, false,
   ]))
   if (protectedRun.ok) check('protection note rendered', hasText(protectedRun.value, '按保护规则收缩'))
 
-  const plainRun = tries('panel (unprotected)', () => render(panel, [
+  const plainRun = tries('panel (unprotected)', () => renderPanel([
     openState, policy, null, false, { ...preview, protected: false }, 0, undefined, false,
   ]))
   if (plainRun.ok) check('no protection note otherwise', !hasText(plainRun.value, '按保护规则收缩'))
@@ -269,7 +298,7 @@ const tries = (label, fn) => {
 
 // 10) Preview block carries the seq range and the sampled excerpt.
 {
-  const run = tries('panel (preview text)', () => render(panel, [
+  const run = tries('panel (preview text)', () => renderPanel([
     openState, policy, null, false, preview, 0, undefined, false,
   ]))
   if (run.ok) {
