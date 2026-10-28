@@ -65,6 +65,9 @@ window.__ModuleLoader__.load({
       exportButton: '导出',
       importButton: '导入',
       importHint: '从 JSON 文件导入设置（包含全局和所有会话策略）。',
+      clearSessionsButton: (n) => `清除所有会话策略（${n}）`,
+      clearSessionsHint: '只删除每个会话的单独设置，全局默认保留。',
+      clearSessionsConfirm: (n) => `确定删除 ${n} 个会话的自定义策略？此操作不可撤销。`,
       trendTitle: '历史趋势',
       trendEmpty: '暂无历史数据。',
       previewTitle: '下次压缩',
@@ -351,6 +354,7 @@ window.__ModuleLoader__.load({
           const [defaults, setDefaults] = React.useState(null);
           const [perSession, setPerSession] = React.useState(false);
           const [preview, setPreview] = React.useState(null);
+          const [sessionCount, setSessionCount] = React.useState(0);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
 
@@ -372,6 +376,7 @@ window.__ModuleLoader__.load({
                 setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
                 setPerSession(data?.perSession === true);
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
+                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setSaveError(false);
               })
               .catch(() => {
@@ -383,6 +388,17 @@ window.__ModuleLoader__.load({
           }, [state.open]);
 
           React.useEffect(() => () => clearTimeout(saveTimer.current), []);
+
+          // Esc closes the panel. Scoped to the open state, so nothing listens
+          // while it is shut, and the handler never swallows other keys.
+          React.useEffect(() => {
+            if (!state.open) return undefined;
+            const onKeyDown = (event) => {
+              if (event.key === 'Escape') store.publish({ open: false });
+            };
+            window.addEventListener('keydown', onKeyDown);
+            return () => window.removeEventListener('keydown', onKeyDown);
+          }, [state.open]);
 
           const savePolicy = (next) => {
             fetch(SETTINGS_API, {
@@ -406,6 +422,7 @@ window.__ModuleLoader__.load({
                 setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
                 setPerSession(data?.perSession === true);
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
+                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -438,14 +455,38 @@ window.__ModuleLoader__.load({
                 setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
                 setPerSession(data?.perSession === true);
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
+                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
+                setSaveError(false);
+              })
+              .catch(() => setSaveError(true));
+          };
+
+          /** Drop every per-session override at once, keeping the global default. */
+          const clearSessions = () => {
+            if (sessionCount === 0) return;
+            if (typeof window !== 'undefined' && !window.confirm(copy.clearSessionsConfirm(sessionCount))) return;
+            fetch(SETTINGS_API, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ action: 'clear-sessions', session: state.sessionId }),
+            })
+              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+              .then((data) => {
+                setPolicy(typeof data?.settings === 'object'
+                  ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
+                  : null);
+                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
+                setPerSession(data?.perSession === true);
+                setPreview(typeof data?.preview === 'object' ? data.preview : null);
+                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
           };
 
           /** Export all settings to a JSON file. */
-          const exportSettings = () => {
-            fetch(SETTINGS_API, {
+          const exportSettings = () => {            fetch(SETTINGS_API, {
               method: 'POST',
               credentials: 'same-origin',
               headers: { 'content-type': 'application/json' },
@@ -814,6 +855,32 @@ window.__ModuleLoader__.load({
             },
           }, copy.importButton)),
           h('div', { style: hint }, copy.importHint),
+          sessionCount > 0 && h('button', {
+            key: 'clear-sessions',
+            type: 'button',
+            onClick: clearSessions,
+            style: {
+              width: '100%',
+              marginTop: 8,
+              padding: '6px 10px',
+              border: '1px solid var(--dsw-alias-stroke-secondary)',
+              borderRadius: 6,
+              background: 'transparent',
+              color: 'var(--dsw-alias-state-error-primary, #d54941)',
+              fontSize: 12,
+              cursor: 'pointer',
+              transition: 'background .12s, border-color .12s',
+            },
+            onMouseEnter: (e) => {
+              e.currentTarget.style.background = 'var(--dsw-alias-interactive-bg-hover)';
+              e.currentTarget.style.borderColor = 'var(--dsw-alias-state-error-primary, #d54941)';
+            },
+            onMouseLeave: (e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-secondary)';
+            },
+          }, copy.clearSessionsButton(sessionCount)),
+          sessionCount > 0 && h('div', { style: hint }, copy.clearSessionsHint),
           h('div', {
             style: {
               marginTop: 12, color: 'var(--dsw-alias-label-tertiary)',

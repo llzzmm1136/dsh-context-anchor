@@ -1115,6 +1115,7 @@ function settingsPayload(scope, sessionId) {
     perSession: scoped,
     limits: { min: SETTINGS_MIN_PERCENT, max: SETTINGS_MAX_PERCENT },
     protectLimits: { maxItems: PROTECT_MAX_ITEMS, maxChars: PROTECT_MAX_CHARS },
+    sessionCount: Object.keys(sessionPolicies).length,
     compaction: fromAgents || scope.get('compaction') !== undefined,
     preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
   }
@@ -1173,6 +1174,13 @@ function registerSettingsRoute(ctx) {
             } else {
               sendJson(res, 400, { error: 'delete requires a session id' })
             }
+            return
+          }
+          if (isObject(body) && body.action === 'clear-sessions') {
+            // Drop every per-session override at once, keeping the global default.
+            sessionPolicies = Object.create(null)
+            persistSettings(settings, sessionPolicies)
+            sendJson(res, 200, settingsPayload(scope, sessionId))
             return
           }
           if (isObject(body) && body.action === 'export') {
