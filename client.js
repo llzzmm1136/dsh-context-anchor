@@ -67,6 +67,10 @@ window.__ModuleLoader__.load({
       importHint: '从 JSON 文件导入设置（包含全局和所有会话策略）。',
       trendTitle: '历史趋势',
       trendEmpty: '暂无历史数据。',
+      previewTitle: '下次压缩',
+      previewRange: (from, to, count, total) => `seq ${from}–${to} · ${count}/${total}`,
+      previewAtThreshold: (p) => `占用到 ${p}% 时，上面这些会先归档成检查点。`,
+      previewAuto: '自动模式由 harness 决定何时压缩；这是它将会处理的最早一段。',
       saveFailed: '保存失败，稍后重试。',
       policyUnavailable: '设置暂不可用：宿主还没有加载这一版，重启 DSH 后再打开面板。',
       noCompaction: '当前环境没有压缩服务，自定义阈值不会生效。',
@@ -123,7 +127,7 @@ window.__ModuleLoader__.load({
     /** Render a mini trend chart from history data points. */
     function renderTrendChart(history) {
       if (!Array.isArray(history) || history.length === 0) {
-        return h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', textAlign: 'center', padding: '12px 0' } }, copy.trendEmpty)
+        return h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', textAlign: 'center', padding: '12px 0' } }, COPY.trendEmpty)
       }
 
       const width = 240
@@ -341,6 +345,7 @@ window.__ModuleLoader__.load({
           const [policy, setPolicy] = React.useState(null);
           const [defaults, setDefaults] = React.useState(null);
           const [perSession, setPerSession] = React.useState(false);
+          const [preview, setPreview] = React.useState(null);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
 
@@ -361,6 +366,7 @@ window.__ModuleLoader__.load({
                   : false);
                 setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
                 setPerSession(data?.perSession === true);
+                setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSaveError(false);
               })
               .catch(() => {
@@ -393,6 +399,7 @@ window.__ModuleLoader__.load({
                   : next);
                 setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
                 setPerSession(data?.perSession === true);
+                setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -424,6 +431,7 @@ window.__ModuleLoader__.load({
                   : null);
                 setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
                 setPerSession(data?.perSession === true);
+                setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -638,6 +646,29 @@ window.__ModuleLoader__.load({
               h('div', { style: { marginLeft: 'auto' } },
                 switchButton(policy.autoRecall, () => updatePolicy({ autoRecall: !policy.autoRecall })))),
             h('div', { style: hint }, copy.recallHint),
+            preview?.available === true && h('div', { key: 'preview', style: { marginTop: 12 } },
+              h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 6 } },
+                h('span', { style: { color: 'var(--dsw-alias-label-tertiary)' } }, copy.previewTitle),
+                h('span', {
+                  style: {
+                    marginLeft: 'auto', color: 'var(--dsw-alias-label-tertiary)',
+                    fontVariantNumeric: 'tabular-nums',
+                  },
+                }, copy.previewRange(preview.from, preview.to, preview.count, preview.total))),
+              h('div', { style: hint }, policy.mode === 'custom'
+                ? copy.previewAtThreshold(policy.percent)
+                : copy.previewAuto),
+              Array.isArray(preview.samples) && preview.samples.map((sample) => h('div', {
+                key: `preview-${sample.seq}`,
+                style: {
+                  marginTop: 4, padding: '4px 6px', borderRadius: 6,
+                  background: 'var(--dsw-alias-fill-tertiary, rgba(0,0,0,.06))',
+                  color: 'var(--dsw-alias-label-tertiary)', fontSize: 11, lineHeight: '15px',
+                  overflow: 'hidden',
+                },
+              },
+              h('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, `#${sample.seq} `),
+              sample.text))),
             perSession && defaults && h('div', {
               key: 'defaults',
               style: {

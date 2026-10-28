@@ -855,6 +855,44 @@ function occupancyOf(scope, session) {
  * plugin asks the same compaction service for an explicit, turn-aligned region,
  * so the log still keeps everything and `context_recall` keeps reaching it.
  */
+/**
+ * The region an early compaction folds when it fires: from the first non-system
+ * node up to a turn boundary near 60% of the surface, never splitting a
+ * tool-call/result pair and never swallowing the instruction in flight.
+ *
+ * Shared with the panel's preview, so what the panel promises is exactly what
+ * the gate will do — the two must not drift apart.
+ */
+function archiveRegionOf(session) {
+  const surface = session?.surface
+  if (surface === undefined || !Array.isArray(surface.nodes)) return { skip: 'no-surface' }
+
+  const nodes = [...surface.nodes]
+  if (nodes.length < 8) return { skip: 'few-nodes', nodes: nodes.length }
+
+  const startIndex = nodes.findIndex((seq) => session.eventAt(seq)?.type !== 'system/message')
+  if (startIndex < 0) return { skip: 'no-start' }
+
+  // The newest user message is the instruction this open turn is working on;
+  // folding it into the checkpoint would hide the very request in flight.
+  let lastUserIndex = -1
+  for (let index = nodes.length - 1; index > startIndex; index -= 1) {
+    if (session.eventAt(nodes[index])?.type === 'user/message') {
+      lastUserIndex = index
+      break
+    }
+  }
+
+  // Stop at a turn boundary near 60% of the surface, so recent turns stay
+  // verbatim and the cut never splits a tool-call/result pair.
+  let endIndex = Math.min(Math.floor(nodes.length * 0.6), lastUserIndex - 1)
+  while (endIndex > startIndex + 1 && session.eventAt(nodes[endIndex + 1])?.type !== 'user/message') endIndex -= 1
+  if (endIndex <= startIndex + 1 || session.eventAt(nodes[endIndex + 1])?.type !== 'user/message') {
+    return { skip: 'no-boundary', startIndex, lastUserIndex, endIndex }
+  }
+  return { nodes, startIndex, endIndex }
+}
+
 async function compactEarly(scope, session, agent, signal) {
   // Read the policy for *this* session: a threshold set in one conversation
   // must not decide when another one condenses.
@@ -879,32 +917,9 @@ async function compactEarly(scope, session, agent, signal) {
   if (now - previous < 45_000) return traceCompaction({ skip: 'throttled', percent })
   compactionAttempts.set(session, now)
 
-  const surface = session.surface
-  if (surface === undefined || !Array.isArray(surface.nodes)) return traceCompaction({ skip: 'no-surface' })
-
-  const nodes = [...surface.nodes]
-  if (nodes.length < 8) return traceCompaction({ skip: 'few-nodes', nodes: nodes.length })
-
-  const startIndex = nodes.findIndex((seq) => session.eventAt(seq)?.type !== 'system/message')
-  if (startIndex < 0) return traceCompaction({ skip: 'no-start' })
-
-  // The newest user message is the instruction this open turn is working on;
-  // folding it into the checkpoint would hide the very request in flight.
-  let lastUserIndex = -1
-  for (let index = nodes.length - 1; index > startIndex; index -= 1) {
-    if (session.eventAt(nodes[index])?.type === 'user/message') {
-      lastUserIndex = index
-      break
-    }
-  }
-
-  // Stop at a turn boundary near 60% of the surface, so recent turns stay
-  // verbatim and the cut never splits a tool-call/result pair.
-  let endIndex = Math.min(Math.floor(nodes.length * 0.6), lastUserIndex - 1)
-  while (endIndex > startIndex + 1 && session.eventAt(nodes[endIndex + 1])?.type !== 'user/message') endIndex -= 1
-  if (endIndex <= startIndex + 1 || session.eventAt(nodes[endIndex + 1])?.type !== 'user/message') {
-    return traceCompaction({ skip: 'no-boundary', startIndex, lastUserIndex, endIndex })
-  }
+  const region = archiveRegionOf(session)
+  if (region.skip !== undefined) return traceCompaction({ skip: region.skip, ...region })
+  const { nodes, startIndex, endIndex } = region
 
   try {
     const result = await compaction.compactRegion(nodes[startIndex], nodes[endIndex], agent, signal)
@@ -918,6 +933,59 @@ async function compactEarly(scope, session, agent, signal) {
     traceCompaction({ failed: String(error), percent, threshold: policy.percent })
     throw error
   }
+}
+
+/**
+ * What the next early compaction would fold, computed without touching the
+ * session: the count, the seq range, a couple of excerpted endpoints, and the
+ * occupancy that decides when it fires. Purely a read, so the panel can show it
+ * on every poll.
+ */
+function archivePreviewOf(scope, session) {
+  const region = archiveRegionOf(session)
+  if (region.skip !== undefined) return { available: false, reason: region.skip }
+
+  const { nodes, startIndex, endIndex } = region
+  const seqs = nodes.slice(startIndex, endIndex + 1)
+  const { used, window } = occupancyOf(scope, session)
+  const percent = Number.isFinite(used) && Number.isFinite(window) && window > 0
+    ? Math.round((used / window) * 100)
+    : 0
+  const samples = []
+  // Three endpoints are what a reader needs: where the region starts, the first
+  // instruction inside it, and where it ends. Anything more is noise at 264px.
+  const firstUserOffset = seqs.findIndex((seq) => session.eventAt(seq)?.type === 'user/message')
+  const picks = [...new Set([0, firstUserOffset, seqs.length - 1])].filter((index) => index >= 0).sort((a, b) => a - b)
+  for (const index of picks) {
+    const seq = seqs[index]
+    if (seq === undefined) continue
+    const event = session.eventAt(seq)
+    const text = eventText(event)
+    if (text.length === 0) continue
+    samples.push({ seq, type: event.type, text: text.slice(0, 140) })
+  }
+  return {
+    available: true,
+    count: seqs.length,
+    total: nodes.length,
+    from: seqs[0],
+    to: seqs.at(-1),
+    samples,
+    used: percent > 0 ? used : 0,
+    window: percent > 0 ? window : 0,
+    percent,
+  }
+}
+
+/** Resolve the live session behind an id, if this host is currently driving it. */
+function liveSessionOf(scope, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
+  const agents = scope.get('agents')
+  const live = typeof agents?.list === 'function' ? agents.list() : []
+  for (const agent of live) {
+    if (sessionIdOf(agent?.session) === sessionId) return agent.session
+  }
+  return undefined
 }
 
 /**
@@ -974,12 +1042,14 @@ function settingsPayload(scope, sessionId) {
   const live = typeof agents?.list === 'function' ? agents.list() : []
   const fromAgents = live.some((agent) => agent?.ctx?.get?.('compaction') !== undefined)
   const scoped = typeof sessionId === 'string' && sessionId.length > 0
+  const session = liveSessionOf(scope, sessionId)
   return {
     settings: settingsFor(sessionId),
     defaults: settings,
     perSession: scoped,
     limits: { min: SETTINGS_MIN_PERCENT, max: SETTINGS_MAX_PERCENT },
     compaction: fromAgents || scope.get('compaction') !== undefined,
+    preview: session === undefined ? undefined : archivePreviewOf(scope, session),
   }
 }
 
