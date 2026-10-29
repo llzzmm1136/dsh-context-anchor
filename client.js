@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.6.6';
+    const CLIENT_VERSION = 'v1.7.0';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -86,6 +86,12 @@ window.__ModuleLoader__.load({
       anchorLabel: '本步注入',
       anchorValue: (chars, tokens, recalled) => `${chars} 字符 · 约 ${tokens} token${recalled ? ' · 含回忆' : ''}`,
       anchorNone: '尚未注入：发出下一条消息后显示',
+      memoryLabel: '分类记忆',
+      memoryValue: (counts) => [
+        ['决定', counts.decision], ['约束', counts.constraint], ['问题', counts.problem],
+        ['待办', counts.task], ['文件', counts.file], ['命令', counts.command], ['事实', counts.fact],
+      ].filter(([, n]) => n > 0).map(([name, n]) => `${name} ${n}`).join(' · '),
+      memoryNone: '还没有分类记忆',
       adviceTitle: '建议',
       adviceNoCompaction: '启用 @deepseek-ai/dsh-compaction-basic 后，自定义阈值才会生效。',
       adviceAutoHigh: (p) => `占用已到 ${p}%，切到自定义 60% 可提前压缩，减少降智。`,
@@ -372,6 +378,7 @@ window.__ModuleLoader__.load({
           const [sessionCount, setSessionCount] = React.useState(0);
           const [indexStats, setIndexStats] = React.useState(null);
           const [anchorStats, setAnchorStats] = React.useState(null);
+          const [memoryStats, setMemoryStats] = React.useState(null);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
 
@@ -396,6 +403,7 @@ window.__ModuleLoader__.load({
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
+                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
                 setSaveError(false);
               })
               .catch(() => {
@@ -453,6 +461,7 @@ window.__ModuleLoader__.load({
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
+                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -488,6 +497,7 @@ window.__ModuleLoader__.load({
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
+                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -516,6 +526,7 @@ window.__ModuleLoader__.load({
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
+                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -699,7 +710,10 @@ window.__ModuleLoader__.load({
               : null,
             row('anchor', copy.anchorLabel, anchorStats && typeof anchorStats.chars === 'number'
               ? copy.anchorValue(anchorStats.chars, anchorStats.tokens ?? 0, anchorStats.recalled === true)
-              : copy.anchorNone)),
+              : copy.anchorNone),
+            memoryStats && typeof memoryStats === 'object'
+              ? row('memory', copy.memoryLabel, copy.memoryValue(memoryStats) || copy.memoryNone)
+              : null),
           h('div', { style: DIVIDER }),
           h('div', { style: { display: 'grid', gap: 2 } },
             row('context', copy.contextLabel, known ? `~${compact(used)} / ${compact(window)}` : copy.unknown),

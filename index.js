@@ -281,7 +281,7 @@ const CACHE_PROJECTION = 'contextAnchorCache'
 const identitySchema = { parse: (value) => value }
 
 /** The two recall tools this plugin owns, and the memory state each one names. */
-const RECALL_TOOLS = { context_recall: 'recall', context_expand: 'expand' }
+const RECALL_TOOLS = { context_recall: 'recall', context_expand: 'expand', context_memory: 'memory' }
 
 /** Memory state after one event: a recall call starts it, any tool result ends it. */
 function activityOf(state, event) {
@@ -922,6 +922,208 @@ function recallArchived(session, state, config) {
   return text
 }
 
+// --- Categorized memory store ----------------------------------------------
+// The anchor is a summary that costs tokens every step. A memory store is the
+// opposite: the log is classified once as it arrives, kept by category, and
+// returned only when the model asks. Classification is deterministic (pattern
+// based), so it is reproducible across fork/resume and needs no model call.
+
+/** Category ids, in the order the panel lists them. */
+const MEMORY_KINDS = [
+  'decision',   // a choice that was made and must not be re-litigated
+  'constraint', // a rule, preference or requirement the user stated
+  'problem',    // an error, failure or blocker that was hit
+  'task',       // an outstanding TODO or next step
+  'file',       // a file that matters, with why
+  'command',    // a command worth repeating (build, test, deploy)
+  'fact',       // a durable fact about the project or environment
+]
+
+const MEMORY_LABELS = {
+  decision: '决定',
+  constraint: '约束',
+  problem: '问题',
+  task: '待办',
+  file: '文件',
+  command: '命令',
+  fact: '事实',
+}
+
+/**
+ * Pattern rules, one pass per event. Order matters: the first matching kind
+ * wins for an event, so specific signals (an error) beat generic ones (a fact).
+ * Kept deliberately narrow — a wrong memory is worse than a missing one.
+ */
+const MEMORY_RULES = [
+  {
+    kind: 'problem',
+    // Error text, stack markers, or an explicit failure report.
+    test: /(error|exception|traceback|failed|failure|cannot|can't|unable|报错|失败|崩溃|不工作|打不开|异常|\bat .+\(.+:\d+\))/i,
+  },
+  {
+    kind: 'decision',
+    test: /(决定|定了|采用|改用|选择|就按|结论是|最终|decided|we'?ll use|going with|settled on|choose|chose)/i,
+  },
+  {
+    kind: 'constraint',
+    test: /(必须|不要|别|只能|禁止|要求|偏好|约定|规则|never|always|must|should not|don't|do not|only|required|prefer)/i,
+  },
+  {
+    kind: 'task',
+    test: /(TODO|FIXME|待办|下一步|接下来|还需要|尚未|还没|remaining|next step|still need|left to do)/i,
+  },
+  {
+    kind: 'command',
+    test: /(npm |pnpm |yarn |git |node |python |cargo |docker |kubectl |systemctl |Get-Content|Invoke-)/,
+  },
+  {
+    kind: 'file',
+    test: /([\w./\\-]+\.(?:js|mjs|ts|tsx|jsx|json|md|yml|yaml|css|html|py|rs|go|java|sh|ps1|toml|ini))(?::\d+)?/i,
+  },
+]
+
+/** Categories whose memories are worth carrying even without a query match. */
+const MEMORY_PINNED = new Set(['constraint', 'decision'])
+
+/** Cap per category, so one noisy kind cannot crowd out the rest. */
+const MEMORY_PER_KIND = 40
+
+/** Identity of a memory: the same sentence said twice is one memory. */
+function memoryKey(kind, text) {
+  return `${kind}:${String(text).toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`
+}
+
+/**
+ * Classify one event into zero or more memories. User messages are the strongest
+ * signal (requirements and corrections live there); assistant messages carry
+ * decisions and conclusions; tool calls carry files and commands.
+ */
+function classifyEvent(event, config) {
+  const data = event.data ?? {}
+  const kindOfSource = event.type === 'user/message'
+    ? 'user'
+    : event.type === 'assistant/message'
+      ? 'assistant'
+      : event.type === 'tool/call'
+        ? 'tool'
+        : null
+  if (kindOfSource === null) return []
+
+  const text = clip(
+    event.type === 'user/message'
+      ? blocksText(data.content)
+      : event.type === 'assistant/message'
+        ? blocksText(data.message?.content)
+        // Tool-call arguments are a raw JSON string, not content blocks.
+        : typeof data.arguments === 'string'
+          ? data.arguments
+          : String(data.arguments ?? ''),
+    config.quoteChars,
+  )
+
+  if (text.length < (kindOfSource === 'tool' ? 12 : 8)) return []
+
+  if (kindOfSource === 'tool') {
+    // A tool call is a file touch or a command — never a decision or a rule,
+    // and never a "problem" just because the arguments mention an error string.
+    const found = []
+    for (const { path } of toolPaths(data.name, data.arguments)) {
+      found.push({ kind: 'file', text: `${clip(path, 120)}（${data.name}）` })
+    }
+    const command = commandOf(data.name, data.arguments)
+    if (command !== null) found.push({ kind: 'command', text: command })
+    return found.map((entry) => ({ ...entry, seq: event.seq, source: kindOfSource, time: event.time }))
+  }
+
+  const found = []
+  for (const rule of MEMORY_RULES) {
+    if (!rule.test.test(text)) continue
+    // Commands are read from tool calls only: a sentence that merely mentions
+    // "npm test" is a bug report, not a command worth repeating.
+    if (rule.kind === 'command' || rule.kind === 'file') continue
+    found.push({ kind: rule.kind, text: clip(text, 160) })
+  }
+
+  // An assistant summary with no rule hit is still a durable statement of state.
+  if (found.length === 0 && kindOfSource === 'assistant') {
+    found.push({ kind: 'fact', text: clip(text, 140) })
+  }
+  return found.map((entry) => ({ ...entry, seq: event.seq, source: kindOfSource, time: event.time }))
+}
+
+/** The command line behind a tool call, when it has one worth repeating. */
+function commandOf(name, rawArgs) {
+  if (typeof rawArgs !== 'string') return null
+  let parsed
+  try {
+    parsed = JSON.parse(rawArgs)
+  } catch {
+    return null
+  }
+  if (!isObject(parsed)) return null
+  const line = typeof parsed.command === 'string'
+    ? parsed.command
+    : typeof parsed.cmd === 'string'
+      ? parsed.cmd
+      : null
+  if (line === null) return null
+  const flat = clip(line, 160)
+  return flat.length >= 4 ? flat : null
+}
+
+/** Per-session memory store, advanced event by event like the anchor fold. */
+const memories = new WeakMap()
+
+function emptyMemoryStore() {
+  return { seq: -1, byKind: Object.fromEntries(MEMORY_KINDS.map((kind) => [kind, []])) }
+}
+
+/** Fold one event into the store. Pure; returns the same reference when nothing changed. */
+function foldMemory(store, event, config) {
+  const entries = classifyEvent(event, config)
+  if (entries.length === 0) return store
+
+  let next = null
+  for (const entry of entries) {
+    const list = (next ?? store).byKind[entry.kind]
+    const key = memoryKey(entry.kind, entry.text)
+    if (list.some((prior) => prior.key === key)) continue
+    next ??= {
+      ...store,
+      byKind: Object.fromEntries(MEMORY_KINDS.map((kind) => [kind, [...store.byKind[kind]]])),
+    }
+    const bucket = next.byKind[entry.kind]
+    bucket.push({ ...entry, key })
+    if (bucket.length > MEMORY_PER_KIND) bucket.splice(0, bucket.length - MEMORY_PER_KIND)
+  }
+  return next ?? store
+}
+
+/** Advance the store to the session cursor, reusing the cached prefix. */
+function memoryOf(session, config) {
+  let store = memories.get(session)
+  if (store === undefined || store.seq > session.seq) {
+    store = emptyMemoryStore()
+    memories.set(session, store)
+  }
+  for (let seq = store.seq + 1; seq < session.seq; seq += 1) {
+    const event = session.eventAt(seq)
+    if (event === undefined) continue
+    store = foldMemory(store, event, config)
+    store.seq = seq
+  }
+  store.seq = Math.max(store.seq, session.seq - 1)
+  memories.set(session, store)
+  return store
+}
+
+/** Counts per category, for the panel and the tool's header. */
+function memoryCounts(store) {
+  const counts = {}
+  for (const kind of MEMORY_KINDS) counts[kind] = store.byKind[kind].length
+  return counts
+}
+
 // --- Early compaction at the configured percentage -------------------------
 
 /** Diagnostics: one JSONL line per compaction decision, so "no effect" is explainable. */
@@ -935,7 +1137,7 @@ function traceCompaction(entry) {
       prior = ''
     }
     if (prior.length > 65_536) prior = prior.slice(-32_768)
-    writeFileSync(file, `${prior}${new Date().toISOString()} ${JSON.stringify(entry)}\n`)
+      writeFileSync(file, `${prior}${new Date().toISOString()} ${JSON.stringify(entry)}\n`)
   } catch {
     // Diagnostics must never break a step.
   }
@@ -1208,6 +1410,7 @@ function settingsPayload(scope, sessionId) {
     sessionCount: Object.keys(sessionPolicies).length,
     index: session === undefined ? undefined : indexStatsOf(session),
     anchor: anchorStatsOf(session),
+    memory: session === undefined ? undefined : memoryCounts(memoryOf(session, config)),
     compaction: fromAgents || scope.get('compaction') !== undefined,
     preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
   }
@@ -1339,6 +1542,12 @@ const RECALL_DESCRIPTION =
 const EXPAND_DESCRIPTION =
   '按 seq 区间逐字读取完整会话日志，包括被压缩隐藏的历史。'
   + 'seq 编号来自 context_recall 的结果（或上下文锚点）；用它读取前后文。'
+
+const MEMORY_DESCRIPTION =
+  '读取本会话自动分类存放的记忆：决定、约束、问题、待办、文件、命令、事实。'
+  + '日志到达时按固定规则归类，不需要模型先总结。'
+  + '问"之前定了什么/有什么要求/上次报错是什么"这类问题时先读它，比全文检索快且省 token。'
+  + '需要原话上下文时，再用 context_expand 按返回的 seq 读取。'
 
 /** Build the two recall tools. Self-contained: no framework imports needed. */
 function recallTools(config) {
@@ -1530,6 +1739,93 @@ function recallTools(config) {
         return {
           text: `日志 seq ${from}..${to} 原文（${events} 条事件，${used} 字符）：\n\n${parts.join('\n')}`,
           events,
+        }
+      },
+    },
+    {
+      name: 'context_memory',
+      description: MEMORY_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: 'string',
+            enum: [...MEMORY_KINDS, 'all'],
+            description: '要读的分类；all 表示全部。默认 all。',
+          },
+          query: {
+            type: 'string',
+            description: '可选：只返回包含这些词条的条目（多个词用空格分隔）。',
+          },
+          limit: {
+            type: 'integer',
+            description: '每个分类最多返回多少条，1–40，默认 8。',
+          },
+        },
+        required: [],
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            text: { type: 'string' },
+            counts: { type: 'object' },
+            total: { type: 'integer' },
+          },
+          required: ['text', 'counts', 'total'],
+        },
+        render: (_args, value) => [{ type: 'text', text: value.text }],
+      },
+      execute(args, exec) {
+        const session = exec.agent?.session
+        if (session === undefined) throw new Error('context_memory 需要一个所属的 agent 会话')
+
+        const store = memoryOf(session, config)
+        const counts = memoryCounts(store)
+        const wanted = MEMORY_KINDS.includes(args?.kind) ? [args.kind] : MEMORY_KINDS
+        const limit = Math.min(40, Math.max(1, Number.isInteger(args?.limit) ? args.limit : 8))
+        const terms = typeof args?.query === 'string'
+          ? kernelTokens(args.query)
+          : []
+
+        const header = MEMORY_KINDS
+          .map((kind) => `${MEMORY_LABELS[kind]} ${counts[kind]}`)
+          .join(' · ')
+
+        const blocks = []
+        let total = 0
+        for (const kind of wanted) {
+          let entries = store.byKind[kind]
+          if (terms.length > 0) {
+            entries = entries.filter((entry) => {
+              const lower = entry.text.toLowerCase()
+              return terms.some((term) => lower.includes(term))
+            })
+          }
+          if (entries.length === 0) continue
+          total += entries.length
+          // Newest first: a later decision supersedes an earlier one.
+          const shown = [...entries].reverse().slice(0, limit)
+          blocks.push([
+            `## ${MEMORY_LABELS[kind]}（${entries.length} 条）`,
+            ...shown.map((entry) => `- [#${entry.seq}] ${entry.text}`),
+            ...(entries.length > shown.length ? [`（更早 ${entries.length - shown.length} 条未显示，可调大 limit 或加 query）`] : []),
+          ].join('\n'))
+        }
+
+        if (blocks.length === 0) {
+          return {
+            text: `分类记忆：${header}\n没有符合条件的记忆。`,
+            counts,
+            total: 0,
+          }
+        }
+        return {
+          text: `分类记忆：${header}\n\n${blocks.join('\n\n')}\n\n需要原文上下文时，用 context_expand 按上面的 seq 读取。`,
+          counts,
+          total,
         }
       },
     },
