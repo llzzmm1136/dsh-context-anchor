@@ -33,13 +33,13 @@ export const inject = ['systemPrompt', 'tools']
 
 const DEFAULTS = {
   /** Hard cap on the anchor text, so the anchor never becomes the problem. */
-  maxAnchorChars: 1600,
+  maxAnchorChars: 1000,
   /** How many recent user messages the anchor quotes. */
-  recentUserMessages: 4,
+  recentUserMessages: 2,
   /** How many distinct files the anchor lists. */
-  recentFiles: 10,
+  recentFiles: 3,
   /** Characters kept per quoted user message. */
-  quoteChars: 180,
+  quoteChars: 130,
   /** Anchor placement among runtime contexts (working directory is 100). */
   order: 105,
 }
@@ -403,6 +403,9 @@ function foldEvent(state, event, config) {
       // not intent, and would drown the signal.
       if (data.source?.kind !== 'user') return state
       const text = clip(blocksText(data.content), config.quoteChars)
+      // Runtime checkpoints are metadata, not human intent; they may arrive as
+      // ordinary user messages and otherwise dominate both the anchor and recall.
+      if (text.startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')) return state
       const recent = text.length === 0
         ? state.recentUser
         : [...state.recentUser, { seq: event.seq, text }].slice(-64)
@@ -464,11 +467,7 @@ function foldSession(session, config) {
 function renderAnchor(session, config) {
   const state = foldSession(session, config)
   const lines = []
-  lines.push(
-    '上下文锚点 —— 每一步都从完整会话日志重建，压缩不会让它消失。'
-    + `会话至今：${state.turns} 轮、${state.userMessages} 条用户消息、`
-    + `${state.assistantMessages} 条助手消息、${state.toolCalls} 次工具调用。`,
-  )
+  lines.push('上下文锚点（来自完整会话日志）')
 
   const recent = state.recentUser.slice(-Math.max(1, config.recentUserMessages))
   if (recent.length > 0) {
@@ -487,10 +486,10 @@ function renderAnchor(session, config) {
 
   if (state.files.size > 0) {
     const entries = [...state.files.entries()].sort((a, b) => b[1].seq - a[1].seq).slice(0, config.recentFiles)
-    lines.push(`涉及文件（最近动过的在前）：${entries.map(([path, meta]) => `${path}（${meta.ops.join('/') || '访问'}×${meta.count}）`).join('，')}`)
+    lines.push(`涉及文件：${entries.map(([path]) => path).join('，')}`)
   }
 
-  if (state.lastAssistant.length > 0) lines.push(`上一步可见动作：${state.lastAssistant}`)
+  if (state.lastAssistant.length > 0) lines.push(`上一步：${clip(state.lastAssistant, 120)}`)
 
   // Memory that matters should arrive on its own: whenever part of the log has
   // left the surface (compaction, or just a long session), pull back the
@@ -506,11 +505,7 @@ function renderAnchor(session, config) {
     }
   }
 
-  lines.push(
-    '以上不是全部。更早的每条消息、每个工具结果都还逐字保存在会话日志里：'
-    + '用 context_recall({ query }) 搜索，或用 context_expand({ from, to }) 读取指定区间。'
-    + '先回忆再猜，改写结论前先重读原文。',
-  )
+  lines.push('更早历史仍在日志：需要原话时用 context_recall 搜索，再用 context_expand 按 seq 读取。')
 
   let text = lines.join('\n')
   if (text.length > config.maxAnchorChars) {
@@ -830,8 +825,9 @@ function recallArchived(session, state, config) {
   // the previous action and the files in play together describe what the model
   // is working on — and "the memory it needs" means the history behind exactly
   // that, not behind the wording of any single message.
-  const focus = [latest.text, state.lastAssistant, ...[...state.files.keys()].slice(0, config.recentFiles)]
-  const parsed = parseQuery(focus.filter((part) => typeof part === 'string' && part.length > 0).join(' '))
+  // Rank by the latest human request, not assistant/tool boilerplate or every
+  // previously touched path (which favored unrelated code fragments).
+  const parsed = parseQuery(latest.text)
   if (parsed.terms.length === 0 && parsed.phrases.length === 0) return ''
 
   // The anchor is rebuilt on every request; re-ranking per step would be wasted
@@ -845,23 +841,37 @@ function recallArchived(session, state, config) {
   const surface = new Set(session.surface?.nodes ?? [])
   // Rank through the same kernel the recall tool uses, keeping only what the
   // surface no longer carries: archived history, not the live turn.
-  const { hits } = kernelSearch(kernel, parsed, 3, (doc) => (
+  const { hits } = kernelSearch(kernel, parsed, 6, (doc) => (
     doc.seq < latest.seq && !surface.has(doc.seq) && doc.type !== 'compaction/end'
+    && !(doc.type === 'user/message' && doc.text.startsWith('用户：Current runtime context. This snapshot supersedes earlier runtime-context snapshots.'))
   ))
   if (hits.length === 0) {
     recallCache.set(session, { key: cacheKey, text: '' })
     return ''
   }
 
-  const lines = hits.map((hit) => {
+  // Automatic injection is more expensive than an on-demand search. Drop
+  // runtime snapshots, weak matches and near-duplicates; the explicit recall
+  // tool still exposes every original event when the agent actually needs it.
+  const seen = new Set()
+  const lines = hits.filter((hit) => {
+    if (hit.score < 1.25) return false
+    const key = clip(hit.text.toLowerCase(), 160)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).slice(0, 2).map((hit) => {
     const doc = kernel.docs.get(hit.seq)
     const excerpt = doc === undefined ? hit.text : kernelSnippet(doc, parsed, 110)
     return `- [#${hit.seq}] ${typeLabel(hit.type)}：${clip(excerpt, 110)}`
   })
+  if (lines.length === 0) {
+    recallCache.set(session, { key: cacheKey, text: '' })
+    return ''
+  }
   const text = [
-    `自动回忆 —— 已归档 ${state.compactions} 段；与当前任务最相关的原文（不必再问用户）：`,
+    '可能相关的旧记录（详情按 seq 回读）：',
     ...lines,
-    '不够时用 context_recall 换词再搜，或对某条 seq 用 context_expand 读前后文。',
   ].join('\n')
   recallCache.set(session, { key: cacheKey, text })
   return text
@@ -1423,7 +1433,7 @@ function recallTools(config) {
           },
           maxChars: {
             type: 'integer',
-            description: `输出字符上限，200–${config.expandMaxChars}。默认 ${Math.min(20000, config.expandMaxChars)}。`,
+            description: `输出字符上限，200–${config.expandMaxChars}。默认 ${Math.min(4000, config.expandMaxChars)}。`,
           },
         },
         required: ['from'],
