@@ -16,6 +16,10 @@ globalThis.window = {
 globalThis.setInterval = () => 0
 globalThis.clearInterval = () => {}
 
+/** The version the panel must report: the one package.json ships, one source. */
+const { readFileSync } = await import('node:fs')
+const packageVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
+
 await import('./client.js')
 
 const el = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() })
@@ -125,7 +129,8 @@ const checks = [
   ['panel renders a click-away backdrop', panelText.includes('"background":"transparent"')],
   ['panel keeps its footer note without settings', panelText.includes('缓存不进上下文窗口')],
   ['panel draws the trend chart', panelText.includes('历史趋势') && panelText.includes('"svg"')],
-  ['panel carries the version marker', /v1\.6\.\d+/.test(panelText)],
+  ['panel carries the version marker', panelText.includes(`v${packageVersion}`),
+    `expected v${packageVersion}`],
   ['panel effects run clean', effectsError === null,
     effectsError === null ? '' : `${effectsError && effectsError.message}`],
 ]
