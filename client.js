@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.7.2';
+    const CLIENT_VERSION = 'v1.7.3';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -223,6 +223,12 @@ window.__ModuleLoader__.load({
     };
     const DIVIDER = { height: 1, margin: '10px 0', background: 'var(--dsw-alias-border-l1)' };
 
+    /** Preferred panel width; clamped to the viewport when published. */
+    const PANEL_WIDTH = 460;
+    /** Two columns above this width, one below it. */
+    const TWO_COLUMN_MIN = 400;
+    const COLUMNS = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' };
+
     /**
      * Bridge between the dock badge and the overlay panel: they are separate
      * slot entries with no shared parent, so the badge publishes the anchor
@@ -334,14 +340,16 @@ window.__ModuleLoader__.load({
                 return;
               }
               const rect = event.currentTarget.getBoundingClientRect();
-              const width = 264;
+              // Wide enough for two columns; never wider than the viewport.
               const viewportWidth = typeof window === 'undefined' ? 1024 : window.innerWidth;
               const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight;
+              const width = Math.max(280, Math.min(PANEL_WIDTH, viewportWidth - 24));
               store.publish({
                 open: true,
                 cache: cached,
                 pressure,
                 sessionId,
+                width,
                 left: Math.max(12, Math.min(rect.left, viewportWidth - width - 12)),
                 bottom: viewportHeight - rect.top + 8,
               });
@@ -629,6 +637,8 @@ window.__ModuleLoader__.load({
           const known = typeof used === 'number' && typeof window === 'number' && window > 0;
           const percent = known ? Math.min(100, Math.round((used / window) * 100)) : 0;
           const tier = tierOf(percent, copy);
+          // Two columns only when the panel is actually wide enough for them.
+          const wide = (typeof state.width === 'number' ? state.width : PANEL_WIDTH) >= TWO_COLUMN_MIN;
 
           const row = (key, label, value) => h('div', { key, style: ROW },
             h('span', { style: ROW_LABEL }, label),
@@ -682,7 +692,9 @@ window.__ModuleLoader__.load({
             'aria-label': copy.panelTitle,
             style: {
               position: 'fixed', left: state.left, bottom: state.bottom, zIndex: 1,
-              boxSizing: 'border-box', width: 264, padding: 12, borderRadius: 'var(--dsw-radius-lg)',
+              boxSizing: 'border-box',
+              width: typeof state.width === 'number' ? state.width : PANEL_WIDTH,
+              padding: 12, borderRadius: 'var(--dsw-radius-lg)',
               // The panel grows upward from the badge. With every block it now
               // carries, cap it below the viewport top and scroll inside — an
               // overflowing menu is just a quieter way of not opening.
@@ -708,15 +720,32 @@ window.__ModuleLoader__.load({
               },
             }, `~${compact(cached.tokens)}`)),
           h('div', { style: DIVIDER }),
-          h('div', { style: { display: 'grid', gap: 2 } },
-            row('status', copy.statusLabel, status),
-            row('content', copy.contentLabel, copy.contentValue({ chars: compact(cached.chars), events: cached.events })),
-            typeof cached.recalls === 'number'
-              ? row('recalls', copy.recallsLabel, copy.recallsValue(cached.recalls))
-              : null,
-            indexStats && typeof indexStats.docs === 'number'
-              ? row('index', copy.indexLabel, copy.indexValue(indexStats.docs, indexStats.terms ?? 0))
-              : null,
+          // Two columns keep the panel short: counters on the left, pressure on
+          // the right, and the long lines below span both. Narrow windows fall
+          // back to one column rather than squeezing the values.
+          h('div', { key: 'stats', style: wide ? COLUMNS : { display: 'grid', gap: 8 } },
+            h('div', { style: { display: 'grid', gap: 2 } },
+              row('status', copy.statusLabel, status),
+              row('content', copy.contentLabel, copy.contentValue({ chars: compact(cached.chars), events: cached.events })),
+              typeof cached.recalls === 'number'
+                ? row('recalls', copy.recallsLabel, copy.recallsValue(cached.recalls))
+                : null,
+              indexStats && typeof indexStats.docs === 'number'
+                ? row('index', copy.indexLabel, copy.indexValue(indexStats.docs, indexStats.terms ?? 0))
+                : null),
+            h('div', { style: { display: 'grid', gap: 2 } },
+              row('context', copy.contextLabel, known ? `~${compact(used)} / ${compact(window)}` : copy.unknown),
+              h('div', { key: 'degrade', style: ROW },
+                h('span', { style: ROW_LABEL }, copy.degradeLabel),
+                h('span', { style: { ...ROW_VALUE, color: known ? tier.tone : ROW_VALUE.color } },
+                  known ? `${tier.label} · ${percent}%` : copy.unknown)),
+              known && h('div', {
+                style: {
+                  marginTop: 4, height: 4, borderRadius: 999, overflow: 'hidden',
+                  background: 'var(--dsw-alias-interactive-bg-hover)',
+                },
+              }, h('div', { style: { height: '100%', width: `${percent}%`, background: tier.tone } })))),
+          h('div', { style: { display: 'grid', gap: 2, marginTop: 8 } },
             row('anchor', copy.anchorLabel, anchorStats && typeof anchorStats.chars === 'number'
               ? copy.anchorValue(anchorStats.chars, anchorStats.tokens ?? 0, anchorStats.recalled === true)
               : copy.anchorNone),
@@ -726,19 +755,6 @@ window.__ModuleLoader__.load({
             row('compactions', copy.compactionCountLabel, compactionStats && typeof compactionStats.count === 'number'
               ? copy.compactionCountValue(compactionStats.count, compactionStats.lastSeq)
               : copy.compactionCountValue(0))),
-          h('div', { style: DIVIDER }),
-          h('div', { style: { display: 'grid', gap: 2 } },
-            row('context', copy.contextLabel, known ? `~${compact(used)} / ${compact(window)}` : copy.unknown),
-            h('div', { key: 'degrade', style: ROW },
-              h('span', { style: ROW_LABEL }, copy.degradeLabel),
-              h('span', { style: { ...ROW_VALUE, color: known ? tier.tone : ROW_VALUE.color } },
-                known ? `${tier.label} · ${percent}%` : copy.unknown))),
-          known && h('div', {
-            style: {
-              marginTop: 6, height: 4, borderRadius: 999, overflow: 'hidden',
-              background: 'var(--dsw-alias-interactive-bg-hover)',
-            },
-          }, h('div', { style: { height: '100%', width: `${percent}%`, background: tier.tone } })),
           known && cached.history?.length > 0 && h('div', {
             key: 'trend',
             style: { marginTop: 12 },
@@ -891,8 +907,8 @@ window.__ModuleLoader__.load({
           h('div', {
             key: 'export-import',
             style: {
-              marginTop: 16,
-              paddingTop: 12,
+              marginTop: 12,
+              paddingTop: 10,
               borderTop: '1px solid var(--dsw-alias-stroke-tertiary)',
               display: 'flex',
               gap: 8,

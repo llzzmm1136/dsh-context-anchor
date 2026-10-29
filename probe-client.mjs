@@ -121,6 +121,12 @@ const checks = [
   ['badge listens for clicks', typeof button.props.onClick === 'function'],
   ['click opens the panel', panelTree !== null],
   ['panel keeps the badge anchor', panelText.includes('"left":400') && panelText.includes('"bottom":88')],
+  // The panel used to be a 264px column that grew past the screen. It must stay
+  // wide (two columns) rather than silently reverting to the narrow version.
+  ['panel is wide enough for two columns', panelText.includes('"width":460'),
+    `width: 460 expected, got ${/"width":(\d+)/.exec(panelText)?.[1]}`],
+  ['panel uses the two-column grid', panelText.includes('"gridTemplateColumns":"1fr 1fr"'), panelText],
+  ['panel still caps its height', panelText.includes('maxHeight'), panelText],
   ['panel shows the title and figures', panelText.includes('记忆与上下文') && panelText.includes('208.9K')],
   ['panel shows the searching state', panelText.includes('正在检索记忆')],
   ['panel shows the search count', panelText.includes('3 次')],
