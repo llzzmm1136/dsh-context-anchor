@@ -6,6 +6,7 @@
  * Usage: node smoke.mjs
  */
 
+import './test/isolate.mjs'
 import { apply } from './index.js'
 
 /** Minimal Session stand-in exposing only what the plugin reads. */

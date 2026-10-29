@@ -7,6 +7,7 @@
  * These assert the defaults, so they run the plugin with no configuration.
  */
 
+import './isolate.mjs'
 import { apply } from '../index.js'
 
 class FakeSession {

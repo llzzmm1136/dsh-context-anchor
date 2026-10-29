@@ -11,6 +11,7 @@
  * cases here use 400 — the tightest budget the plugin can actually be given.
  */
 
+import './isolate.mjs'
 import { apply } from '../index.js'
 
 const text = (value) => [{ type: 'text', text: value }]

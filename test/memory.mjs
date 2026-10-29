@@ -5,6 +5,7 @@
  * make the feature harmful: wrong category, duplicated memory, resume drift.
  */
 
+import './isolate.mjs'
 import { apply } from '../index.js'
 
 class FakeSession {
@@ -41,8 +42,8 @@ session.push('assistant/message', assistant('TODO: 还需要给面板补一个�
 session.push('tool/call', { turn: 1, step: 2, callId: 'c1', name: 'read', arguments: JSON.stringify({ file_path: 'src/auth/token.ts' }) })
 // command
 session.push('tool/call', { turn: 1, step: 3, callId: 'c2', name: 'pwsh', arguments: JSON.stringify({ command: 'npm test -- --reporter=dot' }) })
-// fact — an assistant summary with no rule hit
-session.push('assistant/message', assistant('项目使用 Cordis 插件模型，宿主与客户端各一半。'))
+// fact — a durable project statement from the user, not assistant narration
+session.push('user/message', user('这个项目用 Cordis 插件模型，宿主与客户端各一半。'))
 // duplicate constraint — same sentence again, must not be stored twice
 session.push('user/message', user('记住：所有日志必须是 UTF-8，不要用 GBK。'))
 

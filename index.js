@@ -54,6 +54,7 @@ const SETTINGS_DEFAULT = { mode: 'auto', percent: 70, autoRecall: true, protect:
 const SETTINGS_MIN_PERCENT = 30
 const SETTINGS_MAX_PERCENT = 80
 const SETTINGS_PATH_SEGMENTS = ['storages', 'context-anchor', 'settings.json']
+const MEMORY_PATH_SEGMENTS = ['storages', 'context-anchor', 'memory.json']
 const SETTINGS_ROUTE = '/api/dsh-context-anchor'
 const MAX_HISTORY_POINTS = 50
 
@@ -536,6 +537,11 @@ function renderAnchor(session, config) {
     at: session.seq,
     time: Date.now(),
   })
+
+  // Carry standing rules and settled decisions into later sessions. Done here,
+  // once per step, because this is the one place that already holds the fold.
+  persistCarriedMemory(memoryOf(session, config))
+
   return text
 }
 
@@ -1118,8 +1124,11 @@ function classifyEvent(event, config) {
     found.push({ kind: rule.kind, text: clip(text, 160) })
   }
 
-  // An assistant summary with no rule hit is still a durable statement of state.
-  if (found.length === 0 && kindOfSource === 'assistant') {
+  // A user statement that hits no rule is usually a durable fact about the
+  // project ("这个项目用 X", "构建走 Y"). Assistant text is deliberately not
+  // filed here: that is where progress narration lands ("进度 3：继续处理…"),
+  // it is worthless once the turn ends, and `fact` is carried across sessions.
+  if (found.length === 0 && kindOfSource === 'user') {
     found.push({ kind: 'fact', text: clip(text, 140) })
   }
   return found.map((entry) => ({ ...entry, seq: event.seq, source: kindOfSource, time: event.time }))
@@ -1177,7 +1186,14 @@ function foldMemory(store, event, config) {
 function memoryOf(session, config) {
   let store = memories.get(session)
   if (store === undefined || store.seq > session.seq) {
-    store = emptyMemoryStore()
+    // A fresh session starts from the memories earlier sessions established,
+    // then folds its own log on top: the same rules apply, and anything said
+    // here supersedes what was carried in.
+    const carried = loadCarriedMemory()
+    store = {
+      seq: -1,
+      byKind: Object.fromEntries(MEMORY_KINDS.map((kind) => [kind, [...carried.byKind[kind]]])),
+    }
     memories.set(session, store)
   }
   for (let seq = store.seq + 1; seq < session.seq; seq += 1) {
@@ -1197,6 +1213,116 @@ function memoryCounts(store) {
   for (const kind of MEMORY_KINDS) counts[kind] = store.byKind[kind].length
   return counts
 }
+
+// --- Cross-session memory ---------------------------------------------------
+// Everything above dies with the session. What survives here is the small subset
+// that stays true after the conversation ends: standing rules, settled
+// decisions and durable facts. Files, commands, tasks and problems are tied to
+// the work in flight — carrying them into a new session would be noise, and a
+// wrong remembered rule is worse than none.
+
+/** Categories worth keeping across sessions. */
+const PERSISTED_KINDS = new Set(['constraint', 'decision', 'fact'])
+
+/** Cap per category on disk, so the file cannot grow without bound. */
+const PERSISTED_PER_KIND = 60
+
+/** `$DSH_HOME/storages/context-anchor/memory.json`. */
+function memoryFile() {
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, ...MEMORY_PATH_SEGMENTS)
+}
+
+/**
+ * Loaded once per host process. Held as a plain store so it can seed each
+ * session's fold: a new session starts knowing what earlier ones established.
+ */
+let carriedMemory = null
+
+function emptyCarried() {
+  return {
+    seq: -1,
+    byKind: Object.fromEntries(MEMORY_KINDS.map((kind) => [kind, []])),
+  }
+}
+
+/** Read the persisted memories; a missing or broken file means none. */
+function loadCarriedMemory() {
+  if (carriedMemory !== null) return carriedMemory
+  carriedMemory = emptyCarried()
+  try {
+    const raw = JSON.parse(readFileSync(memoryFile(), 'utf8'))
+    if (!isObject(raw?.byKind)) return carriedMemory
+    for (const kind of MEMORY_KINDS) {
+      if (!PERSISTED_KINDS.has(kind)) continue
+      const list = raw.byKind[kind]
+      if (!Array.isArray(list)) continue
+      for (const item of list) {
+        if (!isObject(item) || typeof item.text !== 'string' || item.text.length === 0) continue
+        // Keep the original source: the pinning rule trusts user-stated entries,
+        // and a rule carried from an earlier session is still user-stated. The
+        // separate `carried` flag records where it came from for the panel.
+        carriedMemory.byKind[kind].push({
+          kind,
+          text: item.text,
+          key: memoryKey(kind, item.text),
+          source: item.source === 'assistant' || item.source === 'tool' ? item.source : 'user',
+          carried: true,
+          origin: typeof item.origin === 'string' ? item.origin : undefined,
+          time: typeof item.time === 'number' ? item.time : 0,
+        })
+      }
+    }
+  } catch {
+    // Absent or unreadable: run with nothing carried over.
+  }
+  return carriedMemory
+}
+
+/** Write the memory file atomically, keeping only the persisted categories. */
+function persistCarriedMemory(store) {
+  if (store === undefined) return
+  // Fingerprint what would be written: the anchor is rebuilt every step, and
+  // rewriting an unchanged file each time would be pure disk churn.
+  const wanted = {}
+  for (const kind of MEMORY_KINDS) {
+    if (!PERSISTED_KINDS.has(kind)) continue
+    wanted[kind] = store.byKind[kind].slice(-PERSISTED_PER_KIND)
+  }
+  const fingerprint = MEMORY_KINDS
+    .filter((kind) => PERSISTED_KINDS.has(kind))
+    .map((kind) => `${kind}:${(wanted[kind] ?? []).map((entry) => entry.key ?? entry.text).join('|')}`)
+    .join('\n')
+  if (fingerprint === lastPersistedFingerprint) return
+  lastPersistedFingerprint = fingerprint
+
+  try {
+    const byKind = {}
+    for (const kind of MEMORY_KINDS) {
+      if (!PERSISTED_KINDS.has(kind)) continue
+      byKind[kind] = (wanted[kind] ?? [])
+        .map((entry) => ({ text: entry.text, time: entry.time, origin: entry.origin, source: entry.source }))
+    }
+    const target = memoryFile()
+    mkdirSync(dirname(target), { recursive: true })
+    const temporary = `${target}.tmp`
+    writeFileSync(temporary, `${JSON.stringify({ byKind }, null, 2)}\n`, 'utf8')
+    renameSync(temporary, target)
+
+    // Keep the in-process copy in step with the file: a new session in this same
+    // host seeds from `carriedMemory`, and it must see what was just written
+    // rather than the state loaded at startup.
+    carriedMemory = {
+      seq: -1,
+      byKind: Object.fromEntries(MEMORY_KINDS.map((kind) => [kind, [...(wanted[kind] ?? [])]])),
+    }
+  } catch {
+    // Persistence is a convenience: never let a disk problem break a step.
+  }
+}
+
+/** Fingerprint of the last memory write, so an unchanged store is not rewritten. */
+let lastPersistedFingerprint = null
 
 // --- Early compaction at the configured percentage -------------------------
 
@@ -1896,7 +2022,11 @@ function recallTools(config) {
           const shown = [...entries].reverse().slice(0, limit)
           blocks.push([
             `## ${MEMORY_LABELS[kind]}（${entries.length} 条）`,
-            ...shown.map((entry) => `- [#${entry.seq}] ${entry.text}`),
+            // A memory carried from an earlier session has no seq in this log,
+            // so name its origin instead of printing an empty reference.
+            ...shown.map((entry) => (typeof entry.seq === 'number'
+              ? `- [#${entry.seq}] ${entry.text}`
+              : `- [早前会话] ${entry.text}`)),
             ...(entries.length > shown.length ? [`（更早 ${entries.length - shown.length} 条未显示，可调大 limit 或加 query）`] : []),
           ].join('\n'))
         }

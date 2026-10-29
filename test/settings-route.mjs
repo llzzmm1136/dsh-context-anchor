@@ -8,6 +8,7 @@
  * here instead of in the live UI.
  */
 
+import './isolate.mjs'
 import { apply } from '../index.js'
 
 class FakeSession {
