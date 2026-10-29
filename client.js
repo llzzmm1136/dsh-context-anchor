@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.6.5';
+    const CLIENT_VERSION = 'v1.6.6';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -83,6 +83,9 @@ window.__ModuleLoader__.load({
       protectHint: '逗号分隔，最多 8 条。命中这些词的那一段不会被折进检查点。',
       indexLabel: '检索索引',
       indexValue: (docs, terms) => `${docs} 篇 · ${terms} 词条`,
+      anchorLabel: '本步注入',
+      anchorValue: (chars, tokens, recalled) => `${chars} 字符 · 约 ${tokens} token${recalled ? ' · 含回忆' : ''}`,
+      anchorNone: '尚未注入：发出下一条消息后显示',
       adviceTitle: '建议',
       adviceNoCompaction: '启用 @deepseek-ai/dsh-compaction-basic 后，自定义阈值才会生效。',
       adviceAutoHigh: (p) => `占用已到 ${p}%，切到自定义 60% 可提前压缩，减少降智。`,
@@ -368,6 +371,7 @@ window.__ModuleLoader__.load({
           const [preview, setPreview] = React.useState(null);
           const [sessionCount, setSessionCount] = React.useState(0);
           const [indexStats, setIndexStats] = React.useState(null);
+          const [anchorStats, setAnchorStats] = React.useState(null);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
 
@@ -391,6 +395,7 @@ window.__ModuleLoader__.load({
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
+                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setSaveError(false);
               })
               .catch(() => {
@@ -447,6 +452,7 @@ window.__ModuleLoader__.load({
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
+                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -481,6 +487,7 @@ window.__ModuleLoader__.load({
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
+                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -508,6 +515,7 @@ window.__ModuleLoader__.load({
                 setPreview(typeof data?.preview === 'object' ? data.preview : null);
                 setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
+                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -688,7 +696,10 @@ window.__ModuleLoader__.load({
               : null,
             indexStats && typeof indexStats.docs === 'number'
               ? row('index', copy.indexLabel, copy.indexValue(indexStats.docs, indexStats.terms ?? 0))
-              : null),
+              : null,
+            row('anchor', copy.anchorLabel, anchorStats && typeof anchorStats.chars === 'number'
+              ? copy.anchorValue(anchorStats.chars, anchorStats.tokens ?? 0, anchorStats.recalled === true)
+              : copy.anchorNone)),
           h('div', { style: DIVIDER }),
           h('div', { style: { display: 'grid', gap: 2 } },
             row('context', copy.contextLabel, known ? `~${compact(used)} / ${compact(window)}` : copy.unknown),

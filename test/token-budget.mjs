@@ -106,5 +106,13 @@ check('expand default budget is 4000 characters', unbudgeted.text.length < 4400,
 const explicit = expand.execute({ from: 0, to: 200, maxChars: 600 }, { agent })
 check('an explicit maxChars still wins', explicit.text.length < 900, `length=${explicit.text.length}`)
 
+// The panel's "what did this step actually cost" row reads these numbers.
+const recall = tools.get('context_recall')
+const functionWords = recall.execute({ query: '的 了 是 这个 可以 就是', limit: 3 }, { agent })
+check('Chinese function words are not indexed', functionWords.total === 0, functionWords.text)
+
+const realTerm = recall.execute({ query: 'zephyr-auth 令牌' }, { agent })
+check('content words still rank', realTerm.total >= 1, realTerm.text)
+
 console.log(failures === 0 ? '\nTOKEN BUDGET CHECKS PASSED' : `\n${failures} TOKEN BUDGET CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -73,8 +73,8 @@ const compactionAttempts = new WeakMap()
 /** Last auto-recall result per session, keyed by the log/surface cursor it was derived from. */
 const recallCache = new WeakMap()
 
-/** History of cache pressure over time, per session. Each entry: { time: timestamp, percent: number }. */
-const pressureHistory = new WeakMap()
+/** Last anchor actually handed to the model, per session: chars + rough tokens. */
+const anchorStats = new WeakMap()
 
 const clampPercent = (value) => Math.min(
   SETTINGS_MAX_PERCENT,
@@ -515,7 +515,22 @@ function renderAnchor(session, config) {
     // Cut by code point, so an emoji at the boundary cannot become half a pair.
     text = `${head.length > budget ? `${cutText(head, budget)}…` : head}\n${tail}`
   }
+  // What the model actually pays for this step. The panel shows it so "did the
+  // budget change help?" is answerable instead of a guess.
+  anchorStats.set(session, {
+    chars: text.length,
+    tokens: Math.ceil(text.length / CHARS_PER_TOKEN),
+    lines: lines.length,
+    recalled: lines.some((line) => line.startsWith('- [#')),
+    at: session.seq,
+    time: Date.now(),
+  })
   return text
+}
+
+/** The last anchor written for a session, or undefined before the first step. */
+function anchorStatsOf(session) {
+  return session === undefined ? undefined : anchorStats.get(session)
 }
 
 /** One readable line per event, used by both recall tools. */
@@ -570,6 +585,22 @@ const WORD_RE = /[a-z0-9_]{2,}/g
 const CJK_RUN_RE = /[\u3400-\u9fff\uf900-\ufaff]+/g
 
 /**
+ * Function-word bigrams and single characters. Chinese has no word boundary, so
+ * the kernel indexes adjacent bigrams; these are the ones that appear in almost
+ * every sentence. Skipping them at index time keeps the index smaller and stops
+ * "the/of/and" from outranking the words that actually identify a passage.
+ */
+const CJK_STOP = new Set([
+  '的了', '的时', '时候', '我们', '你们', '他们', '这个', '那个', '这些', '那些',
+  '就是', '可以', '还是', '但是', '因为', '所以', '如果', '然后', '现在', '已经',
+  '需要', '使用', '一个', '没有', '不是', '这么', '那么', '什么', '怎么', '这样',
+  '那样', '一下', '一些', '而且', '并且', '或者', '以及', '对于', '关于', '通过',
+  '进行', '能够', '应该', '可能', '其实', '只是', '还有', '也是', '都是', '我要',
+  '的是', '是的', '了吗', '呢？', '好的', '我先', '让我', '了吧',
+])
+const CJK_STOP_CHARS = new Set(['的', '了', '是', '在', '和', '就', '不', '都', '也', '很', '与', '或', '个', '我', '你', '他', '这', '那', '吗', '呢', '吧', '啊', '着', '过', '把', '被', '给', '对', '从', '到'])
+
+/**
  * Tokens for indexing and querying: latin words of two or more characters, and
  * adjacent-character bigrams for every CJK run.
  */
@@ -582,8 +613,14 @@ function kernelTokens(text) {
   CJK_RUN_RE.lastIndex = 0
   while ((match = CJK_RUN_RE.exec(lower)) !== null) {
     const run = match[0]
-    if (run.length === 1) tokens.push(run)
-    else for (let index = 0; index + 1 < run.length; index += 1) tokens.push(run.slice(index, index + 2))
+    if (run.length === 1) {
+      if (!CJK_STOP_CHARS.has(run)) tokens.push(run)
+      continue
+    }
+    for (let index = 0; index + 1 < run.length; index += 1) {
+      const bigram = run.slice(index, index + 2)
+      if (!CJK_STOP.has(bigram)) tokens.push(bigram)
+    }
   }
   return tokens
 }
@@ -650,9 +687,11 @@ function parseQuery(raw) {
   const phrases = []
   const exclude = []
   const filters = {}
+  let wordParts = 0
   for (const part of String(raw ?? '').match(/"[^"]*"|\S+/g) ?? []) {
     if (part.length > 2 && part.startsWith('"') && part.endsWith('"')) {
       phrases.push(part.slice(1, -1).toLowerCase())
+      wordParts += 1
       continue
     }
     const filter = /^([a-z]+):(.+)$/i.exec(part)
@@ -671,9 +710,10 @@ function parseQuery(raw) {
       exclude.push(part.slice(1).toLowerCase())
       continue
     }
+    wordParts += 1
     terms.push(...kernelTokens(part))
   }
-  return { terms: [...new Set(terms)], phrases, exclude, filters }
+  return { terms: [...new Set(terms)], phrases, exclude, filters, wordParts }
 }
 
 /** Does one document survive the parsed filters? */
@@ -719,6 +759,9 @@ function kernelSearch(kernel, parsed, limit, keep) {
     const posting = kernel.postings.get(term)
     if (posting === undefined) continue
     const df = posting.size
+    // A term in more than half the documents says nothing about which passage
+    // matters; its IDF is ~0 anyway, so skipping it saves the whole posting scan.
+    if (df > n / 2 && parsed.terms.length > 1) continue
     const idf = Math.log(1 + (n - df + 0.5) / (df + 0.5))
     for (const [seq, tf] of posting) {
       const doc = docs.get(seq)
@@ -735,9 +778,11 @@ function kernelSearch(kernel, parsed, limit, keep) {
     }
   }
 
-  // Filter-only query (no searchable term at all): every surviving doc competes
-  // on recency. When terms exist but rank nothing, the honest answer is "no hit".
-  if (scores.size === 0 && parsed.terms.length === 0 && parsed.phrases.length === 0) {
+  // Filter-only query (no searchable word was even typed): every surviving doc
+  // competes on recency. When words exist but rank nothing — including words
+  // that were all stopword-filtered — the honest answer is "no hit", not the
+  // whole log.
+  if (scores.size === 0 && parsed.wordParts === 0) {
     for (const doc of docs.values()) scores.set(doc.seq, 1)
   }
 
@@ -1162,6 +1207,7 @@ function settingsPayload(scope, sessionId) {
     protectLimits: { maxItems: PROTECT_MAX_ITEMS, maxChars: PROTECT_MAX_CHARS },
     sessionCount: Object.keys(sessionPolicies).length,
     index: session === undefined ? undefined : indexStatsOf(session),
+    anchor: anchorStatsOf(session),
     compaction: fromAgents || scope.get('compaction') !== undefined,
     preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
   }
