@@ -1391,7 +1391,7 @@ async function readJsonBody(req) {
 }
 
 /** What the panel needs to render the settings block for one session. */
-function settingsPayload(scope, sessionId) {
+function settingsPayload(scope, sessionId, config) {
   // A preset-mounted compaction backend is invisible from the profile root, so
   // ask the live agents too: whichever composition owns a session owns the
   // service that can actually compact it.
@@ -1410,7 +1410,9 @@ function settingsPayload(scope, sessionId) {
     sessionCount: Object.keys(sessionPolicies).length,
     index: session === undefined ? undefined : indexStatsOf(session),
     anchor: anchorStatsOf(session),
-    memory: session === undefined ? undefined : memoryCounts(memoryOf(session, config)),
+    memory: session === undefined || config === undefined
+      ? undefined
+      : memoryCounts(memoryOf(session, config)),
     compaction: fromAgents || scope.get('compaction') !== undefined,
     preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
   }
@@ -1421,7 +1423,7 @@ function settingsPayload(scope, sessionId) {
  * authenticated with the same connection check the shipped routes use, so the
  * panel talks to its own host half without widening the page's reach.
  */
-function registerSettingsRoute(ctx) {
+function registerSettingsRoute(ctx, config) {
   ctx.inject(['webServer', 'connection'], (scope) => {
     scope.effect(() => scope.webServer.register({
       kind: 'prefix',
@@ -1442,7 +1444,7 @@ function registerSettingsRoute(ctx) {
         // reads and writes the global default.
         const querySession = url.searchParams.get('session') ?? undefined
         if (req.method === 'GET') {
-          sendJson(res, 200, settingsPayload(scope, querySession))
+          sendJson(res, 200, settingsPayload(scope, querySession, config))
           return
         }
         if (req.method !== 'POST') {
@@ -1456,7 +1458,7 @@ function registerSettingsRoute(ctx) {
             : querySession
           // POST carries the page's Origin, so the panel reads through POST too.
           if (isObject(body) && body.action === 'read') {
-            sendJson(res, 200, settingsPayload(scope, sessionId))
+            sendJson(res, 200, settingsPayload(scope, sessionId, config))
             return
           }
           if (isObject(body) && body.action === 'client-error') {
@@ -1475,7 +1477,7 @@ function registerSettingsRoute(ctx) {
               const { [sessionId]: _, ...rest } = sessionPolicies
               sessionPolicies = rest
               persistSettings(settings, sessionPolicies)
-              sendJson(res, 200, settingsPayload(scope, sessionId))
+              sendJson(res, 200, settingsPayload(scope, sessionId, config))
             } else {
               sendJson(res, 400, { error: 'delete requires a session id' })
             }
@@ -1485,7 +1487,7 @@ function registerSettingsRoute(ctx) {
             // Drop every per-session override at once, keeping the global default.
             sessionPolicies = Object.create(null)
             persistSettings(settings, sessionPolicies)
-            sendJson(res, 200, settingsPayload(scope, sessionId))
+            sendJson(res, 200, settingsPayload(scope, sessionId, config))
             return
           }
           if (isObject(body) && body.action === 'export') {
@@ -1522,7 +1524,7 @@ function registerSettingsRoute(ctx) {
             settings = next
           }
           persistSettings(settings, sessionPolicies)
-          sendJson(res, 200, settingsPayload(scope, sessionId))
+          sendJson(res, 200, settingsPayload(scope, sessionId, config))
         } catch (error) {
           scope.logger?.warn?.(`context-anchor: settings save failed: ${String(error)}`)
           sendJson(res, 500, { error: 'settings could not be saved' })
@@ -1887,7 +1889,7 @@ export function apply(ctx, rawConfig) {
 
   // The panel's memory policy: persisted next to the harness home, applied live.
   loadSettings()
-  registerSettingsRoute(ctx)
+  registerSettingsRoute(ctx, config)
   registerEarlyCompaction(ctx)
 
   ctx.logger?.info?.('context-anchor: live anchor context and full-log recall tools registered')
