@@ -22,13 +22,32 @@ const el = (type, props, ...children) => ({ type, props: props ?? {}, children: 
 class FakeComponent {
   constructor(props) { this.props = props; this.state = null; }
 }
+let pendingEffects = []
 const React = {
   createElement: el,
   Component: FakeComponent,
   useState: (initial) => [initial, () => {}],
   useRef: (initial) => ({ current: initial }),
-  useEffect: () => {},
+  // Effects are COLLECTED and executed by runEffects() — a no-op here is how
+  // the window.addEventListener crash hid from this probe for two releases.
+  useEffect: (fn) => { pendingEffects.push(fn) },
 }
+
+/** Mount semantics: effects run after render, as React would. */
+function runEffects() {
+  const list = pendingEffects
+  pendingEffects = []
+  const cleanups = []
+  for (const effect of list) {
+    const cleanup = effect()
+    if (typeof cleanup === 'function') cleanups.push(cleanup)
+  }
+  return cleanups
+}
+
+// The panel's read effect fires a same-origin POST; stub it so the probe never
+// reaches the network.
+globalThis.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
 
 const definition = globalThis.__definition
 if (definition.id !== '@local/dsh-context-anchor') throw new Error(`unexpected id ${definition.id}`)
@@ -63,6 +82,7 @@ const props = { useProjection: (key) => (key === 'contextAnchorCache' ? cache : 
 
 const badgeTree = badge.component(props)
 const badgeText = JSON.stringify(badgeTree)
+runEffects()
 
 // Click the badge: it must publish the anchor and open the panel.
 const button = badgeTree.children[0]
@@ -76,9 +96,19 @@ const mountPanel = (props = {}) => {
   const instance = new panel.component(props)
   return instance.render()
 }
+pendingEffects = []
 const panelEl = mountPanel({})
 const panelTree = panelEl.type(panelEl.props ?? {})
 const panelText = JSON.stringify(panelTree)
+
+// Effects must run clean — this is where the Esc shortcut crashed the real
+// panel (the loader's window shim has no addEventListener).
+let effectsError = null
+try {
+  runEffects()
+} catch (error) {
+  effectsError = error
+}
 
 const checks = [
   ['registers the dock badge', badge?.options.id === 'context-anchor-cache'],
@@ -95,7 +125,9 @@ const checks = [
   ['panel renders a click-away backdrop', panelText.includes('"background":"transparent"')],
   ['panel keeps its footer note without settings', panelText.includes('缓存不进上下文窗口')],
   ['panel draws the trend chart', panelText.includes('历史趋势') && panelText.includes('"svg"')],
-  ['panel carries the version marker', panelText.includes('v1.6.2')],
+  ['panel carries the version marker', panelText.includes('v1.6.3')],
+  ['panel effects run clean', effectsError === null,
+    effectsError === null ? '' : `${effectsError && effectsError.message}`],
 ]
 
 // The boundary must turn a crash into visible text, not a deactivated slot.

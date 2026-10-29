@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.6.2';
+    const CLIENT_VERSION = 'v1.6.3';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -403,15 +403,24 @@ window.__ModuleLoader__.load({
 
           React.useEffect(() => () => clearTimeout(saveTimer.current), []);
 
-          // Esc closes the panel. Scoped to the open state, so nothing listens
-          // while it is shut, and the handler never swallows other keys.
+          // Esc closes the panel. The loader's `window` is a shim WITHOUT
+          // addEventListener — a real crash found via the client-error trace —
+          // so pick the first event target that actually works and drop the
+          // shortcut silently when none does. A missing shortcut must never
+          // take the panel down with it.
           React.useEffect(() => {
             if (!state.open) return undefined;
+            const target = typeof globalThis !== 'undefined' && typeof globalThis.addEventListener === 'function'
+              ? globalThis
+              : typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+                ? window
+                : null;
+            if (target === null) return undefined;
             const onKeyDown = (event) => {
               if (event.key === 'Escape') store.publish({ open: false });
             };
-            window.addEventListener('keydown', onKeyDown);
-            return () => window.removeEventListener('keydown', onKeyDown);
+            target.addEventListener('keydown', onKeyDown);
+            return () => target.removeEventListener('keydown', onKeyDown);
           }, [state.open]);
 
           const savePolicy = (next) => {
@@ -480,7 +489,9 @@ window.__ModuleLoader__.load({
           /** Drop every per-session override at once, keeping the global default. */
           const clearSessions = () => {
             if (sessionCount === 0) return;
-            if (typeof window !== 'undefined' && !window.confirm(copy.clearSessionsConfirm(sessionCount))) return;
+            // The shim's window has no confirm; proceed rather than crash —
+            // the button is destructive, but a missing dialog is not fatal.
+            if (typeof window?.confirm === 'function' && !window.confirm(copy.clearSessionsConfirm(sessionCount))) return;
             fetch(SETTINGS_API, {
               method: 'POST',
               credentials: 'same-origin',

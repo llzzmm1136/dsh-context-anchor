@@ -19,6 +19,7 @@ const src = readFileSync(FILE, 'utf8')
 let hookValues = []
 let hookIndex = 0
 
+let pendingEffects = []
 const React = {
   createElement(type, props, ...children) {
     return { type, props: props ?? {}, children }
@@ -26,6 +27,9 @@ const React = {
   Component: class FakeComponent {
     constructor(props) { this.props = props; this.state = null; }
   },
+  // Effects are collected and executed after each render — mount semantics. A
+  // no-op here is how the window.addEventListener crash hid from this suite.
+  useEffect(fn) { pendingEffects.push(fn) },
   useState(init) {
     const value = hookIndex < hookValues.length && hookValues[hookIndex] !== undefined
       ? hookValues[hookIndex]
@@ -33,11 +37,17 @@ const React = {
     hookIndex += 1
     return [value, () => {}]
   },
-  useEffect() {},
   useLayoutEffect() {},
   useMemo(factory) { return factory() },
   useCallback(fn) { return fn },
   useRef(value) { return { current: value } },
+}
+
+/** Mount semantics: effects run after render, as React would. */
+function runEffects() {
+  const list = pendingEffects
+  pendingEffects = []
+  for (const effect of list) effect()
 }
 
 // --- Load the module the way the harness does -----------------------------
@@ -120,11 +130,17 @@ const preview = {
 function render(Component, values, props = {}) {
   hookValues = values
   hookIndex = 0
+  pendingEffects = []
+  let tree
   if (Component.prototype && typeof Component.prototype.render === 'function') {
     const instance = new Component(props)
-    return instance.render()
+    tree = instance.render()
+  } else {
+    tree = Component(props)
   }
-  return Component(props)
+  // Mount semantics: the effects a render schedules run right after it.
+  runEffects()
+  return tree
 }
 
 /**
