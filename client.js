@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.7.1';
+    const CLIENT_VERSION = 'v1.7.2';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -92,6 +92,10 @@ window.__ModuleLoader__.load({
         ['待办', counts.task], ['文件', counts.file], ['命令', counts.command], ['事实', counts.fact],
       ].filter(([, n]) => n > 0).map(([name, n]) => `${name} ${n}`).join(' · '),
       memoryNone: '还没有分类记忆',
+      compactionCountLabel: '压缩次数',
+      compactionCountValue: (count, lastSeq) => (count > 0
+        ? `${count} 次${typeof lastSeq === 'number' && lastSeq >= 0 ? ` · 最近 seq ${lastSeq}` : ''}`
+        : '尚未压缩'),
       adviceTitle: '建议',
       adviceNoCompaction: '启用 @deepseek-ai/dsh-compaction-basic 后，自定义阈值才会生效。',
       adviceAutoHigh: (p) => `占用已到 ${p}%，切到自定义 60% 可提前压缩，减少降智。`,
@@ -379,6 +383,7 @@ window.__ModuleLoader__.load({
           const [indexStats, setIndexStats] = React.useState(null);
           const [anchorStats, setAnchorStats] = React.useState(null);
           const [memoryStats, setMemoryStats] = React.useState(null);
+          const [compactionStats, setCompactionStats] = React.useState(null);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
 
@@ -404,6 +409,7 @@ window.__ModuleLoader__.load({
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
+                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
                 setSaveError(false);
               })
               .catch(() => {
@@ -462,6 +468,7 @@ window.__ModuleLoader__.load({
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
+                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -498,6 +505,7 @@ window.__ModuleLoader__.load({
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
+                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -527,6 +535,7 @@ window.__ModuleLoader__.load({
                 setIndexStats(typeof data?.index === 'object' ? data.index : null);
                 setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
                 setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
+                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
                 setSaveError(false);
               })
               .catch(() => setSaveError(true));
@@ -713,7 +722,10 @@ window.__ModuleLoader__.load({
               : copy.anchorNone),
             memoryStats && typeof memoryStats === 'object'
               ? row('memory', copy.memoryLabel, copy.memoryValue(memoryStats) || copy.memoryNone)
-              : null),
+              : null,
+            row('compactions', copy.compactionCountLabel, compactionStats && typeof compactionStats.count === 'number'
+              ? copy.compactionCountValue(compactionStats.count, compactionStats.lastSeq)
+              : copy.compactionCountValue(0))),
           h('div', { style: DIVIDER }),
           h('div', { style: { display: 'grid', gap: 2 } },
             row('context', copy.contextLabel, known ? `~${compact(used)} / ${compact(window)}` : copy.unknown),

@@ -32,6 +32,10 @@ const text = (value) => [{ type: 'text', text: value }]
 const session = new FakeSession('session-a')
 session.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('必须使用 UTF-8 编码，不要用 GBK。') })
 session.push('assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: text('结论是：改用 SQLite。') }, stream: [] })
+// Two successful compactions and one failed one: only the successes count.
+session.push('compaction/end', { summary: 'first', checkpoint: 1 })
+session.push('compaction/end', { error: 'backend unavailable' })
+session.push('compaction/end', { summary: 'second', checkpoint: 2 })
 
 /** One registered webServer route, so the handler can be invoked for real. */
 let route = null
@@ -107,6 +111,8 @@ check('read carries the policy', typeof read.json?.settings === 'object', JSON.s
 check('read carries the categorized memory counts', typeof read.json?.memory === 'object', JSON.stringify(read.json))
 check('memory counted the constraint', read.json?.memory?.constraint === 1, JSON.stringify(read.json?.memory))
 check('memory counted the decision', read.json?.memory?.decision === 1, JSON.stringify(read.json?.memory))
+check('compaction count excludes the failed one', read.json?.compactions?.count === 2, JSON.stringify(read.json?.compactions))
+check('compaction stats point at the latest success', read.json?.compactions?.lastSeq === 4, JSON.stringify(read.json?.compactions))
 
 const getRead = await call('GET', '/api/dsh-context-anchor/settings?session=session-a')
 check('GET read also returns 200', getRead.status === 200, JSON.stringify(getRead))

@@ -1413,9 +1413,19 @@ function settingsPayload(scope, sessionId, config) {
     memory: session === undefined || config === undefined
       ? undefined
       : memoryCounts(memoryOf(session, config)),
+    compactions: session === undefined || config === undefined
+      ? undefined
+      : compactionStatsOf(session, config),
     compaction: fromAgents || scope.get('compaction') !== undefined,
     preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
   }
+}
+
+/** Successful compactions seen in this session, plus the seq of the latest one. */
+function compactionStatsOf(session, config) {
+  if (session === undefined) return undefined
+  const state = foldSession(session, config)
+  return { count: state.compactions, lastSeq: state.lastCompactionSeq }
 }
 
 /**
