@@ -1073,6 +1073,31 @@ function memoryKey(kind, text) {
   return `${kind}:${String(text).toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`
 }
 
+/** Tokens that carry no subject: boilerplate and framing that survives stripping. */
+const SUBJECT_STOP = new Set(['stdout', 'stderr', 'const', 'console', 'parse', 'will', 'the', 'and'])
+
+/** Framing words that surround a decision without naming its subject. */
+const DECISION_FRAMING = /(结论是|结论|决定|定了|最终|就按|采用|改用|改回|选择|不用|不要|废弃|放弃|decided|decision|we'?ll|going with|settled on|choose|chose|use|using|switch(?:ed)? to)/gi
+
+/**
+ * The subject a decision is about, so a later reversal on the same subject can
+ * retire the earlier one.
+ *
+ * Framing is stripped first, then the leading content token names the subject:
+ * "结论是：缓存改用 SQLite 存储" and "决定：缓存不用 SQLite 了，改回 JSON 文件"
+ * both reduce to 缓存. Crude, but predictable — and a decision that does not
+ * name a subject is never superseded, which is the safe direction (a stale
+ * decision is visible; a wrongly deleted one is not).
+ */
+function subjectKey(text) {
+  const stripped = String(text ?? '').replace(DECISION_FRAMING, ' ')
+  const tokens = kernelTokens(stripped)
+    .filter((token) => token.length > 1 && !SUBJECT_STOP.has(token))
+    // A bare CJK character is too common to name anything.
+    .filter((token) => !/^[\u4e00-\u9fff]$/.test(token))
+  return tokens.length === 0 ? '' : tokens[0]
+}
+
 /**
  * Classify one event into zero or more memories. User messages are the strongest
  * signal (requirements and corrections live there); assistant messages carry
@@ -1176,7 +1201,14 @@ function foldMemory(store, event, config) {
       byKind: Object.fromEntries(MEMORY_KINDS.map((kind) => [kind, [...store.byKind[kind]]])),
     }
     const bucket = next.byKind[entry.kind]
-    bucket.push({ ...entry, key })
+    // A reversal on the same subject retires the earlier decision instead of
+    // leaving two contradictory ones for the model to arbitrate.
+    const subject = entry.kind === 'decision' ? subjectKey(entry.text) : ''
+    if (subject.length > 0) {
+      const stale = bucket.findIndex((prior) => prior.subject === subject)
+      if (stale >= 0) bucket.splice(stale, 1)
+    }
+    bucket.push({ ...entry, key, subject })
     if (bucket.length > MEMORY_PER_KIND) bucket.splice(0, bucket.length - MEMORY_PER_KIND)
   }
   return next ?? store
@@ -1266,6 +1298,11 @@ function loadCarriedMemory() {
           kind,
           text: item.text,
           key: memoryKey(kind, item.text),
+          // Recompute rather than trust the file: the rule may have changed, and
+          // a stale subject would stop a reversal from retiring this entry.
+          subject: kind === 'decision'
+            ? (typeof item.subject === 'string' ? item.subject : subjectKey(item.text))
+            : '',
           source: item.source === 'assistant' || item.source === 'tool' ? item.source : 'user',
           carried: true,
           origin: typeof item.origin === 'string' ? item.origin : undefined,
@@ -1300,8 +1337,13 @@ function persistCarriedMemory(store) {
     const byKind = {}
     for (const kind of MEMORY_KINDS) {
       if (!PERSISTED_KINDS.has(kind)) continue
-      byKind[kind] = (wanted[kind] ?? [])
-        .map((entry) => ({ text: entry.text, time: entry.time, origin: entry.origin, source: entry.source }))
+      byKind[kind] = (wanted[kind] ?? []).map((entry) => ({
+        text: entry.text,
+        time: entry.time,
+        origin: entry.origin,
+        source: entry.source,
+        subject: entry.subject,
+      }))
     }
     const target = memoryFile()
     mkdirSync(dirname(target), { recursive: true })
