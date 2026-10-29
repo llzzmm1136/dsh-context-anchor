@@ -30,7 +30,7 @@ const text = (value) => [{ type: 'text', text: value }]
 const RUNTIME_SNAPSHOT = 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current working directory: C:\\work.'
 
 const session = new FakeSession()
-session.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('把 zephyr-auth 的令牌过期时间改成 30 分钟。') })
+session.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('必须用 30 分钟：把 zephyr-auth 的令牌过期时间改成 30 分钟。') })
 session.push('assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: text('zephyr-auth 的过期时间在 src/auth/token.ts 里。') }, stream: [] })
 session.push('tool/call', { turn: 1, step: 2, callId: 'c1', name: 'read', arguments: JSON.stringify({ file_path: 'src/auth/token.ts' }) })
 session.push('tool/result', { turn: 1, step: 2, message: { role: 'tool', content: text('const TTL_MINUTES = 60') } })
@@ -95,6 +95,16 @@ check('default anchor quotes the current instruction', anchorText.includes('zeph
 check('anchor no longer repeats session counters', !anchorText.includes('条用户消息'), anchorText)
 check('runtime checkpoint stays out of the anchor', !anchorText.includes('This snapshot supersedes'), anchorText)
 check('anchor still points at the recall tools', anchorText.includes('context_recall') && anchorText.includes('context_expand'), anchorText)
+
+// Standing rules ride along without the model asking: a wrong assumption about a
+// constraint costs more than the ~60 tokens this line spends.
+check('a standing constraint rides along', anchorText.includes('已定：') && anchorText.includes('30 分钟'), anchorText)
+const pinnedLine = /已定：[^\n]*/.exec(anchorText)?.[0]
+check('the pinned line stays cheap', typeof pinnedLine === 'string' && pinnedLine.length <= 200, pinnedLine)
+// Assistant narration mentions "规则" and "改用" in passing. Pinning that would
+// feed the model its own phrasing as a standing rule on every later step.
+check('assistant narration is not pinned as a rule',
+  typeof pinnedLine === 'string' && !pinnedLine.includes('进度 39'), pinnedLine)
 
 // Auto-recall runs here (one compaction, most of the log off surface).
 check('auto-recall returns the archived match', anchorText.includes('#0') || anchorText.includes('#1'), anchorText)

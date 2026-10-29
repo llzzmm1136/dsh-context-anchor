@@ -466,66 +466,110 @@ function foldSession(session, config) {
 /** Render the anchor text. Recomputed from the full log, so it outlives compaction. */
 function renderAnchor(session, config) {
   const state = foldSession(session, config)
-  const lines = []
-  lines.push('上下文锚点（来自完整会话日志）')
+  const policy = settingsFor(sessionIdOf(session))
+
+  // Sections carry a priority instead of a position. When the budget is tight,
+  // the cheapest-but-most-replaceable block goes first: a task counter is
+  // recoverable with a tool call, whereas the recalled history took a ranking
+  // pass to find and is gone from the surface entirely.
+  const sections = []
+  const add = (priority, lines) => {
+    if (lines.length > 0) sections.push({ priority, lines })
+  }
+
+  // Priority 0 never drops: without the task, nothing else is interpretable.
+  add(0, ['上下文锚点（来自完整会话日志）'])
 
   const recent = state.recentUser.slice(-Math.max(1, config.recentUserMessages))
   if (recent.length > 0) {
-    lines.push('当前主线 —— 用户最近的指令，由旧到新：')
-    for (const entry of recent) lines.push(`- [#${entry.seq}] ${entry.text}`)
+    add(1, ['当前主线 —— 用户最近的指令，由旧到新：', ...recent.map((entry) => `- [#${entry.seq}] ${entry.text}`)])
   }
 
-  if (Array.isArray(state.todos) && state.todos.length > 0) {
-    const count = (status) => state.todos.filter((todo) => todo?.status === status).length
-    const active = state.todos.filter((todo) => todo?.status === 'in_progress').map((todo) => todo.content)
-    lines.push(
-      `任务列表：${count('completed')} 项已完成，${count('in_progress')} 项进行中，${count('pending')} 项待办`
-      + (active.length > 0 ? ` —— 正在做：${active.map((entry) => clip(entry, 90)).join('；')}` : ''),
-    )
-  }
-
-  if (state.files.size > 0) {
-    const entries = [...state.files.entries()].sort((a, b) => b[1].seq - a[1].seq).slice(0, config.recentFiles)
-    lines.push(`涉及文件：${entries.map(([path]) => path).join('，')}`)
-  }
-
-  if (state.lastAssistant.length > 0) lines.push(`上一步：${clip(state.lastAssistant, 120)}`)
+  // Constraints and decisions are the two kinds that change how every later
+  // step should be taken, so they ride along even when nobody asks. A wrong
+  // assumption about a standing rule is more expensive than these ~60 tokens.
+  add(2, pinnedMemoryLines(session, config))
 
   // Memory that matters should arrive on its own: whenever part of the log has
   // left the surface (compaction, or just a long session), pull back the
   // archived excerpts that match what is being worked on right now — without
   // waiting for the model to decide to search, and without the user asking.
   const offSurface = session.seq - (session.surface?.nodes?.length ?? 0)
-  if (settingsFor(sessionIdOf(session)).autoRecall && (state.compactions > 0 || offSurface > 60)) {
+  if (policy.autoRecall && (state.compactions > 0 || offSurface > 60)) {
     try {
       const recalled = recallArchived(session, state, config)
-      if (recalled.length > 0) lines.push(recalled)
+      if (recalled.length > 0) add(3, recalled.split('\n'))
     } catch {
       // A recall failure must never take the whole anchor down with it.
     }
   }
 
-  lines.push('更早历史仍在日志：需要原话时用 context_recall 搜索，再用 context_expand 按 seq 读取。')
-
-  let text = lines.join('\n')
-  if (text.length > config.maxAnchorChars) {
-    const head = lines.slice(0, -1).join('\n')
-    const tail = lines.at(-1) ?? ''
-    const budget = Math.max(0, config.maxAnchorChars - tail.length - 8)
-    // Cut by code point, so an emoji at the boundary cannot become half a pair.
-    text = `${head.length > budget ? `${cutText(head, budget)}…` : head}\n${tail}`
+  if (Array.isArray(state.todos) && state.todos.length > 0) {
+    const count = (status) => state.todos.filter((todo) => todo?.status === status).length
+    const active = state.todos.filter((todo) => todo?.status === 'in_progress').map((todo) => todo.content)
+    add(5, [
+      `任务列表：${count('completed')} 项已完成，${count('in_progress')} 项进行中，${count('pending')} 项待办`
+      + (active.length > 0 ? ` —— 正在做：${active.map((entry) => clip(entry, 90)).join('；')}` : ''),
+    ])
   }
+
+  if (state.files.size > 0) {
+    const entries = [...state.files.entries()].sort((a, b) => b[1].seq - a[1].seq).slice(0, config.recentFiles)
+    add(6, [`涉及文件：${entries.map(([path]) => path).join('，')}`])
+  }
+
+  if (state.lastAssistant.length > 0) add(6, [`上一步：${clip(state.lastAssistant, 120)}`])
+
+  // The footer is the map back into the log; keep it until last.
+  const footer = '更早历史仍在日志：需要原话时用 context_recall 搜索，再用 context_expand 按 seq 读取。'
+
+  const { text, dropped } = assembleWithin(sections, footer, config.maxAnchorChars)
+
   // What the model actually pays for this step. The panel shows it so "did the
   // budget change help?" is answerable instead of a guess.
   anchorStats.set(session, {
     chars: text.length,
     tokens: Math.ceil(text.length / CHARS_PER_TOKEN),
-    lines: lines.length,
-    recalled: lines.some((line) => line.startsWith('- [#')),
+    lines: text.split('\n').length,
+    recalled: sections.some((section) => section.priority === 3),
+    dropped,
     at: session.seq,
     time: Date.now(),
   })
   return text
+}
+
+/**
+ * Join the sections that fit, dropping the lowest-priority ones first, then
+ * cutting the remainder by code point. Priority 0 is always kept.
+ */
+function assembleWithin(sections, footer, budget) {
+  const ordered = [...sections].sort((a, b) => a.priority - b.priority)
+  let kept = ordered
+  let dropped = 0
+  const build = (list) => [...list.flatMap((section) => section.lines), footer].join('\n')
+
+  while (kept.length > 1 && build(kept).length > budget) {
+    // The last (lowest-priority) section goes first; ties keep the newest order.
+    const victim = kept.at(-1)
+    dropped += victim.lines.join('\n').length
+    kept = kept.slice(0, -1)
+  }
+
+  const text = build(kept)
+  if (text.length <= budget) return { text, dropped }
+  // Still too long: the remaining sections are priorities 0..n that all matter,
+  // so cut the tail and say so rather than silently shrinking.
+  const room = Math.max(0, budget - footer.length - 2)
+  const head = kept.slice(0, -1).flatMap((section) => section.lines).join('\n')
+  const lastLines = kept.at(-1).lines
+  const tailSection = lastLines.join('\n')
+  const used = head.length > 0 ? head.length + 1 : 0
+  const tailRoom = Math.max(0, room - used)
+  const cut = cutText(tailSection, tailRoom)
+  dropped += tailSection.length - cut.length
+  const body = [head, cut].filter((part) => part.length > 0).join('\n')
+  return { text: `${body}\n${footer}`, dropped }
 }
 
 /** The last anchor written for a session, or undefined before the first step. */
@@ -984,6 +1028,36 @@ const MEMORY_RULES = [
 
 /** Categories whose memories are worth carrying even without a query match. */
 const MEMORY_PINNED = new Set(['constraint', 'decision'])
+
+/**
+ * The newest pinned memory per category, as one short anchor line: standing
+ * rules and settled conclusions are what later steps must not contradict.
+ * Deliberately capped — this rides along on every request, so it has to stay
+ * cheaper than the mistakes it prevents.
+ */
+const PINNED_MAX_CHARS = 200
+
+function pinnedMemoryLines(session, config) {
+  let store
+  try {
+    store = memoryOf(session, config)
+  } catch {
+    return []
+  }
+  const parts = []
+  for (const kind of MEMORY_KINDS) {
+    if (!MEMORY_PINNED.has(kind)) continue
+    // Only what the user actually stated. Assistant prose mentions "规则" and
+    // "改用" in ordinary narration ("我改用 edit 工具"), and pinning that to
+    // every later step would feed the model its own phrasing as a standing rule.
+    // A wrong pinned rule is worse than a missing one.
+    const entry = [...store.byKind[kind]].reverse().find((item) => item.source === 'user')
+    if (entry === undefined) continue
+    parts.push(`${MEMORY_LABELS[kind]}：${clip(entry.text, 80)}`)
+  }
+  if (parts.length === 0) return []
+  return [clip(`已定：${parts.join('；')}`, PINNED_MAX_CHARS)]
+}
 
 /** Cap per category, so one noisy kind cannot crowd out the rest. */
 const MEMORY_PER_KIND = 40

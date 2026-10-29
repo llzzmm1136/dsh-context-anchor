@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.7.3';
+    const CLIENT_VERSION = 'v1.8.0';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -84,7 +84,10 @@ window.__ModuleLoader__.load({
       indexLabel: '检索索引',
       indexValue: (docs, terms) => `${docs} 篇 · ${terms} 词条`,
       anchorLabel: '本步注入',
-      anchorValue: (chars, tokens, recalled) => `${chars} 字符 · 约 ${tokens} token${recalled ? ' · 含回忆' : ''}`,
+      anchorValue: (chars, tokens, recalled, dropped) => {
+        const base = `${chars} 字符 · 约 ${tokens} token${recalled ? ' · 含回忆' : ''}`;
+        return dropped > 0 ? `${base} · 已裁 ${dropped} 字符` : base;
+      },
       anchorNone: '尚未注入：发出下一条消息后显示',
       memoryLabel: '分类记忆',
       memoryValue: (counts) => [
@@ -747,7 +750,7 @@ window.__ModuleLoader__.load({
               }, h('div', { style: { height: '100%', width: `${percent}%`, background: tier.tone } })))),
           h('div', { style: { display: 'grid', gap: 2, marginTop: 8 } },
             row('anchor', copy.anchorLabel, anchorStats && typeof anchorStats.chars === 'number'
-              ? copy.anchorValue(anchorStats.chars, anchorStats.tokens ?? 0, anchorStats.recalled === true)
+              ? copy.anchorValue(anchorStats.chars, anchorStats.tokens ?? 0, anchorStats.recalled === true, anchorStats.dropped ?? 0)
               : copy.anchorNone),
             memoryStats && typeof memoryStats === 'object'
               ? row('memory', copy.memoryLabel, copy.memoryValue(memoryStats) || copy.memoryNone)
