@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.6.3';
+    const CLIENT_VERSION = 'v1.6.4';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -655,6 +655,11 @@ window.__ModuleLoader__.load({
             style: {
               position: 'fixed', left: state.left, bottom: state.bottom, zIndex: 1,
               boxSizing: 'border-box', width: 264, padding: 12, borderRadius: 'var(--dsw-radius-lg)',
+              // The panel grows upward from the badge. With every block it now
+              // carries, cap it below the viewport top and scroll inside — an
+              // overflowing menu is just a quieter way of not opening.
+              maxHeight: `calc(100vh - ${Math.round(typeof state.bottom === 'number' ? state.bottom : 80) + 24}px)`,
+              overflowY: 'auto',
               // The menu token is deliberately translucent (#43454a73 in dark) and
               // expects a 40px backdrop blur in native menus. Alone over chat text it
               // reads washed-out, so paint the solid page color underneath and keep
@@ -1003,7 +1008,8 @@ window.__ModuleLoader__.load({
               role: 'alert',
               style: {
                 position: 'fixed', left: 16, bottom: 64, zIndex: 1,
-                boxSizing: 'border-box', maxWidth: 340, padding: 12,
+                boxSizing: 'border-box', maxWidth: 340, maxHeight: 'calc(100vh - 88px)',
+                overflowY: 'auto', padding: 12,
                 borderRadius: 'var(--dsw-radius-lg)', boxShadow: 'var(--dsw-elevation-prominent)',
                 backgroundColor: 'var(--dsw-alias-bg-base)',
                 color: 'var(--dsw-alias-state-error-primary, #d54941)',
