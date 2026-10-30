@@ -916,28 +916,38 @@ function recallArchived(session, state, config) {
   const latest = state.recentUser.at(-1)
   if (latest === undefined) return ''
 
-  // The query is the current task, not just the last sentence: the instruction,
-  // the previous action and the files in play together describe what the model
-  // is working on — and "the memory it needs" means the history behind exactly
-  // that, not behind the wording of any single message.
-  // Rank by the latest human request, not assistant/tool boilerplate or every
-  // previously touched path (which favored unrelated code fragments).
-  const parsed = parseQuery(latest.text)
-  if (parsed.terms.length === 0 && parsed.phrases.length === 0) return ''
+  // The query is the current task, not just the last sentence. Most human
+  // follow-ups are "继续" / "ok" / "都要": words that carry no topic at all.
+  // Keying the query on the last message alone made auto-recall silently do
+  // nothing for exactly those turns, so fall back to the standing task — the
+  // recent instructions still in the anchor, plus the files in play and the
+  // action just taken. That is what "the memory it needs" means when the
+  // instruction itself names nothing.
+  const query = state.recentUser
+    .slice(-Math.max(1, config.recentUserMessages))
+    .map((entry) => entry.text)
+    .join(' ')
+  const parsed = parseQuery(query)
+  let terms = parsed.terms
+  let phrases = parsed.phrases
+  if (terms.length === 0 && phrases.length === 0) return ''
 
   // The anchor is rebuilt on every request; re-ranking per step would be wasted
   // work when neither the log, the surface nor the task focus has moved.
   const cacheKey = `${session.seq}:${session.surface?.nodes?.length ?? 0}:${state.compactions}:`
-    + `${latest.seq}:${state.lastAssistant.length}:${state.files.size}`
+    + `${latest.seq}:${query.length}:${state.files.size}`
   const cached = recallCache.get(session)
   if (cached?.key === cacheKey) return cached.text
 
   const kernel = kernelOf(session)
   const surface = new Set(session.surface?.nodes ?? [])
+  // What the anchor already prints in full: replaying it here would spend
+  // budget to repeat a line the model has just read.
+  const shown = new Set(state.recentUser.slice(-Math.max(1, config.recentUserMessages)).map((entry) => entry.seq))
   // Rank through the same kernel the recall tool uses, keeping only what the
   // surface no longer carries: archived history, not the live turn.
   const { hits } = kernelSearch(kernel, parsed, 6, (doc) => (
-    doc.seq < latest.seq && !surface.has(doc.seq) && doc.type !== 'compaction/end'
+    doc.seq < latest.seq && !surface.has(doc.seq) && !shown.has(doc.seq) && doc.type !== 'compaction/end'
     && !(doc.type === 'user/message' && doc.text.startsWith('用户：Current runtime context. This snapshot supersedes earlier runtime-context snapshots.'))
   ))
   if (hits.length === 0) {

@@ -1,12 +1,12 @@
 {
   "name": "@local/dsh-context-anchor",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "private": true,
   "type": "module",
   "description": "每一步都从完整会话日志重建上下文锚点，并注册带倒排索引的全量历史检索内核，让超长会话在压缩之后仍保持注意力与记忆。",
   "main": "index.js",
   "scripts": {
-    "test": "node --check index.js && node --check client.js && node smoke.mjs && node probe-client.mjs && node test/cut-region.mjs && node test/highlight.mjs && node test/render-smoke.mjs && node test/token-budget.mjs && node test/memory.mjs && node test/truncation.mjs && node test/carried-memory.mjs && node test/supersession.mjs && node test/settings-route.mjs"
+    "test": "node --check index.js && node --check client.js && node smoke.mjs && node probe-client.mjs && node test/cut-region.mjs && node test/highlight.mjs && node test/render-smoke.mjs && node test/token-budget.mjs && node test/memory.mjs && node test/truncation.mjs && node test/carried-memory.mjs && node test/supersession.mjs && node test/auto-recall.mjs && node test/settings-route.mjs"
   },
   "exports": {
     ".": "./index.js",

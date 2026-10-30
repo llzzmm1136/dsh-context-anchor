@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.10.0';
+    const CLIENT_VERSION = 'v1.11.0';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
