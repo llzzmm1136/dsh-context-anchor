@@ -32,7 +32,9 @@ class FakeSession {
 const text = (value) => [{ type: 'text', text: value }]
 const session = new FakeSession('session-a')
 session.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('必须使用 UTF-8 编码，不要用 GBK。') })
-session.push('assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: text('结论是：改用 SQLite。') }, stream: [] })
+// Stated by the user: only user-stated decisions are filed, so the assistant
+// cannot inflate these counts with commentary about its own work.
+session.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('结论是：改用 SQLite。') })
 // Two successful compactions and one failed one: only the successes count.
 session.push('compaction/end', { summary: 'first', checkpoint: 1 })
 session.push('compaction/end', { error: 'backend unavailable' })

@@ -67,9 +67,12 @@ check('the test home is isolated from the real profile',
 // --- Session 1: establishes a rule, a decision, a fact, and some work state.
 const first = makeSession('session-one')
 first.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('必须保持 UTF-8 编码，绝对不要用 GBK。') })
+// A decision counts only when the human stated it. The assistant's own
+// "结论是…" about its work must not become a rule for the next session.
+first.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('决定：缓存改用 SQLite。') })
 first.push('assistant/message', {
   turn: 1, step: 1,
-  message: { role: 'assistant', content: text('结论是：改用 SQLite 存缓存。') },
+  message: { role: 'assistant', content: text('结论是：我改用 SQLite 存缓存了，稍后再验证。') },
   stream: [],
 })
 first.push('user/message', { role: 'user', source: { kind: 'user' }, content: text('这个项目用 Cordis 插件模型，宿主与客户端各一半。') })

@@ -1176,6 +1176,15 @@ function classifyEvent(event, config) {
     // Commands are read from tool calls only: a sentence that merely mentions
     // "npm test" is a bug report, not a command worth repeating.
     if (rule.kind === 'command' || rule.kind === 'file') continue
+    // A rule or a decision is only a rule when the human said it. The assistant
+    // writes "必须验证…", "改用 edit 工具", "结论是…" constantly in ordinary
+    // narration about its own work, and the keyword test cannot tell that apart
+    // from a user requirement. Measured on a real session, assistant text
+    // supplied 14 of 14 decisions and 39 of 40 constraints — all of it work
+    // commentary, and it is exactly this category that persists across
+    // sessions. Losing a rule the model asserted is cheap; repeating the
+    // model's own narration back to it as a standing requirement is not.
+    if ((rule.kind === 'constraint' || rule.kind === 'decision') && kindOfSource !== 'user') continue
     found.push({ kind: rule.kind, text: clip(text, 160) })
   }
 

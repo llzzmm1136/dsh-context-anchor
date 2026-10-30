@@ -30,8 +30,12 @@ const user = (value) => ({ role: 'user', source: { kind: 'user' }, content: text
 const assistant = (value) => ({ turn: 1, step: 1, message: { role: 'assistant', content: text(value) }, stream: [] })
 
 const session = new FakeSession()
-// decision
-session.push('assistant/message', assistant('结论是：改用 SQLite 存本地索引，不再用 JSON 文件。'))
+// decision — the human settles the question. A decision only counts as one when
+// the user stated it: the assistant writes "结论是…" about its own work all the
+// time, and that is not a decision the next session should inherit.
+session.push('user/message', user('结论是：改用 SQLite 存本地索引，不再用 JSON 文件。'))
+// ...and the assistant restating it must NOT create a second decision.
+session.push('assistant/message', assistant('结论是：我改用 SQLite 存本地索引了。'))
 // constraint — a hard rule the user stated
 session.push('user/message', user('记住：所有日志必须是 UTF-8，不要用 GBK。'))
 // problem
@@ -92,6 +96,11 @@ const all = memory.execute({}, exec)
 console.log('\n--- all memories ---\n' + all.text + '\n--- end ---\n')
 
 check('decision captured', all.text.includes('改用 SQLite'), all.text)
+// The assistant restated the same decision in its own words. Only the user's
+// version may be stored: a rule the model asserted about its own work is not a
+// standing requirement, and this category is carried into later sessions.
+check('a decision the assistant merely restates is not stored',
+  (all.text.match(/改用 SQLite/g) ?? []).length === 1, all.text)
 check('constraint captured', all.text.includes('UTF-8'), all.text)
 check('problem captured', all.text.includes('addEventListener'), all.text)
 check('task captured', all.text.includes('滚动条'), all.text)
