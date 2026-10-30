@@ -504,7 +504,6 @@ function renderAnchor(session, config) {
       // A recall failure must never take the whole anchor down with it.
     }
   }
-
   if (Array.isArray(state.todos) && state.todos.length > 0) {
     const count = (status) => state.todos.filter((todo) => todo?.status === status).length
     const active = state.todos.filter((todo) => todo?.status === 'in_progress').map((todo) => todo.content)
@@ -521,8 +520,12 @@ function renderAnchor(session, config) {
 
   if (state.lastAssistant.length > 0) add(6, [`上一步：${clip(state.lastAssistant, 120)}`])
 
-  // The footer is the map back into the log; keep it until last.
-  const footer = '更早历史仍在日志：需要原话时用 context_recall 搜索，再用 context_expand 按 seq 读取。'
+  // The footer is the map back into the log; keep it until last. It states the
+  // capability and, crucially, when to spend it: "需要原话时" gives the model no
+  // trigger, so it never decides that the moment has arrived. A concrete
+  // condition is something it can actually notice — at half the characters,
+  // because every one of them competes with the history this map leads to.
+  const footer = '不确定早前怎么定的、或要引用原话时：context_recall 搜，context_expand 按 seq 读。'
 
   const { text, dropped } = assembleWithin(sections, footer, config.maxAnchorChars)
 
@@ -975,8 +978,17 @@ function recallArchived(session, state, config) {
     return ''
   }
   const text = [
-    '可能相关的旧记录（详情按 seq 回读）：',
+    // The header used to read "可能相关的旧记录（详情按 seq 回读）：" — "possibly
+    // relevant" plus "read the details yourself" reads as optional, and a model
+    // with no pressure to act on it does not. It now says the excerpts are
+    // authoritative, in as few characters as that idea takes: this block is
+    // dropped last but it still competes for a budget, and a longer header
+    // displaces the excerpts it is introducing.
+    '相关旧记录（本会话原话，与推断冲突时以此为准）：',
     ...lines,
+    // No "read the details with context_expand" note here: the anchor footer
+    // already says exactly that, once, and this block competes for the same
+    // budget as the excerpts it introduces.
   ].join('\n')
   recallCache.set(session, { key: cacheKey, text })
   return text
@@ -1049,9 +1061,11 @@ const MEMORY_PINNED = new Set(['constraint', 'decision'])
  * The newest pinned memory per category, as one short anchor line: standing
  * rules and settled conclusions are what later steps must not contradict.
  * Deliberately capped — this rides along on every request, so it has to stay
- * cheaper than the mistakes it prevents.
+ * cheaper than the mistakes it prevents. The cap is on the whole line, so it
+ * must leave room for the label plus two 80-character rules; a tighter cap
+ * silently truncates the rule and keeps only the label.
  */
-const PINNED_MAX_CHARS = 200
+const PINNED_MAX_CHARS = 240
 
 function pinnedMemoryLines(session, config) {
   let store
@@ -1069,10 +1083,16 @@ function pinnedMemoryLines(session, config) {
     // A wrong pinned rule is worse than a missing one.
     const entry = [...store.byKind[kind]].reverse().find((item) => item.source === 'user')
     if (entry === undefined) continue
-    parts.push(`${MEMORY_LABELS[kind]}：${clip(entry.text, 80)}`)
+    // The stored text usually opens with the same word as the label
+    // ("决定：缓存改用…"), which prints as "决定：决定：…".
+    const body = entry.text.replace(/^\s*(决定|约束|结论|规则|要求)\s*[：:]\s*/, '')
+    parts.push(`${MEMORY_LABELS[kind]}：${clip(body, 80)}`)
   }
   if (parts.length === 0) return []
-  return [clip(`已定：${parts.join('；')}`, PINNED_MAX_CHARS)]
+  // The label has to be short. This line sits under a hard character cap, and a
+  // longer label does not add emphasis — it truncates the rule itself, which is
+  // the one thing the line exists to deliver.
+  return [clip(`已定（不可违反）：${parts.join('；')}`, PINNED_MAX_CHARS)]
 }
 
 /** Cap per category, so one noisy kind cannot crowd out the rest. */

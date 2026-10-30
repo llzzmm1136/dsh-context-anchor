@@ -99,8 +99,8 @@ const check = (label, condition, detail) => {
 const roomy = anchorAt(20000)
 console.log('\n--- anchor with room to spare ---\n' + roomy + '\n--- end ---\n')
 check('every section is present when there is room',
-  roomy.includes('任务列表') && roomy.includes('涉及文件') && roomy.includes('可能相关的旧记录'), roomy)
-check('the standing rule is carried', roomy.includes('已定：'), roomy)
+  roomy.includes('任务列表') && roomy.includes('涉及文件') && roomy.includes('相关旧记录'), roomy)
+check('the standing rule is carried', roomy.includes('已定（不可违反）：'), roomy)
 check('a roomy anchor stays well under the cap', roomy.length <= 20000, `length=${roomy.length}`)
 const roomyLength = roomy.length
 
@@ -111,13 +111,13 @@ check('the tight anchor respects its budget', tight.length <= 400, `length=${tig
 check('the tight anchor is actually shorter', tight.length < roomyLength,
   `tight=${tight.length} roomy=${roomyLength}`)
 check('the current instruction survives', tight.includes('glasswing'), tight)
-check('the standing rule survives', tight.includes('已定：'), tight)
+check('the standing rule survives', tight.includes('已定（不可违反）：'), tight)
 check('the footer map back to the log survives', tight.includes('context_recall'), tight)
 
 // This is the regression the change exists for: the recalled block used to be
 // cut first because it sat at the tail. It must outlive the cheap sections.
 check('recalled history outlives the file/step lines',
-  tight.includes('可能相关的旧记录') && !tight.includes('上一步'), tight)
+  tight.includes('相关旧记录') && !tight.includes('上一步'), tight)
 
 console.log(failures === 0 ? '\nTRUNCATION CHECKS PASSED' : `\n${failures} TRUNCATION CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

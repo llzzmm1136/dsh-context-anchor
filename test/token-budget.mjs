@@ -98,10 +98,16 @@ check('runtime checkpoint stays out of the anchor', !anchorText.includes('This s
 check('anchor still points at the recall tools', anchorText.includes('context_recall') && anchorText.includes('context_expand'), anchorText)
 
 // Standing rules ride along without the model asking: a wrong assumption about a
-// constraint costs more than the ~60 tokens this line spends.
-check('a standing constraint rides along', anchorText.includes('已定：') && anchorText.includes('30 分钟'), anchorText)
-const pinnedLine = /已定：[^\n]*/.exec(anchorText)?.[0]
-check('the pinned line stays cheap', typeof pinnedLine === 'string' && pinnedLine.length <= 200, pinnedLine)
+// constraint costs more than the ~60 tokens this line spends. The label states
+// the obligation rather than merely the fact, because "已定：" alone leaves the
+// model free to treat a user requirement as background trivia.
+check('a standing constraint rides along', /已定（不可违反）：/.test(anchorText) && anchorText.includes('30 分钟'), anchorText)
+const pinnedLine = /已定[^\n]*/.exec(anchorText)?.[0]
+check('the pinned line stays cheap', typeof pinnedLine === 'string' && pinnedLine.length <= 240, pinnedLine)
+// The label already says the category, and the stored text often opens with the
+// same word; printing both yields "决定：决定：…".
+check('the pinned line does not repeat its own label',
+  typeof pinnedLine === 'string' && !/：(决定|约束|结论)[：:]/.test(pinnedLine.replace(/^已定（不可违反）：/, '')), pinnedLine)
 // Assistant narration mentions "规则" and "改用" in passing. Pinning that would
 // feed the model its own phrasing as a standing rule on every later step.
 check('assistant narration is not pinned as a rule',

@@ -40,6 +40,9 @@ apply({
 })
 const anchorDef = [...contexts.values()][0]
 
+/** The block header, kept in one place so wording changes touch one line. */
+const RECALL_HEADER = '相关旧记录'
+
 /** A long session whose early decisions have fallen off the surface. */
 function build(id, finalInstruction) {
   const session = makeSession(id)
@@ -79,12 +82,24 @@ const anchorOf = (instruction, id) => anchorDef.text({ agent: { session: build(i
 // The regression: a bare continuation must still reach archived history.
 for (const vague of ['继续', 'ok', '继续 glasswing']) {
   const anchor = anchorOf(vague, `vague-${vague}`)
-  check(`auto-recall fires on ${JSON.stringify(vague)}`, anchor.includes('可能相关的旧记录'), anchor)
+  check(`auto-recall fires on ${JSON.stringify(vague)}`, anchor.includes(RECALL_HEADER), anchor)
 }
 
 // A concrete instruction keeps working.
 const concrete = anchorOf('把 glasswing 取数层的并发改成 8，并处理 backpressure', 'concrete')
-check('auto-recall fires on a concrete instruction', concrete.includes('可能相关的旧记录'), concrete)
+check('auto-recall fires on a concrete instruction', concrete.includes(RECALL_HEADER), concrete)
+
+// The block must ask to be used, not merely report that something was found.
+// "可能相关" plus "详情按 seq 回读" reads as optional, and a model under no
+// obligation skips it — which is the whole complaint this change answers.
+check('the recall header asks to be acted on', /以此为准/.test(concrete), concrete.split('\n').find((l) => l.includes('旧记录')))
+check('the recall header is not hedged as merely possible',
+  !/可能相关/.test(concrete), concrete.split('\n').find((l) => l.includes('旧记录')))
+
+// The footer must name a concrete moment to use the tools; "需要原话时" is not
+// something a model can notice it has reached.
+check('the footer names when to search',
+  concrete.includes('不确定早前怎么定的'), concrete.split('\n').at(-1))
 
 // The recalled excerpt must add information, not repeat the live instruction.
 const vague = anchorOf('继续 glasswing 取数层', 'dedupe')
