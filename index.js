@@ -1386,6 +1386,13 @@ function loadCarriedMemory() {
       if (!Array.isArray(list)) continue
       for (const item of list) {
         if (!isObject(item) || typeof item.text !== 'string' || item.text.length === 0) continue
+        // Persisted entries can predate the current classifier. Never promote an
+        // unknown source to human intent, or resurrect rejected notices/rules.
+        if (item.source !== 'user' || isInjectedText(item.text)) continue
+        if (kind === 'constraint' || kind === 'decision') {
+          const rule = MEMORY_RULES.find((entry) => entry.kind === kind)
+          if (isQuestion(item.text) || !rule.test.test(item.text)) continue
+        }
         // Keep the original source: the pinning rule trusts user-stated entries,
         // and a rule carried from an earlier session is still user-stated. The
         // separate `carried` flag records where it came from for the panel.
