@@ -404,9 +404,10 @@ function foldEvent(state, event, config) {
       // not intent, and would drown the signal.
       if (data.source?.kind !== 'user') return state
       const text = clip(blocksText(data.content), config.quoteChars)
-      // Runtime checkpoints are metadata, not human intent; they may arrive as
-      // ordinary user messages and otherwise dominate both the anchor and recall.
-      if (text.startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')) return state
+      // Runtime checkpoints and other injected notices are metadata, not human
+      // intent; they arrive as ordinary user messages and otherwise dominate
+      // both the anchor and recall.
+      if (isInjectedText(text)) return state
       const recent = text.length === 0
         ? state.recentUser
         : [...state.recentUser, { seq: event.seq, text }].slice(-64)
@@ -462,6 +463,30 @@ function foldSession(session, config) {
   state.seq = Math.max(state.seq, last)
   folds.set(session, state)
   return state
+}
+
+/**
+ * Text the harness injects into the log under the user's role.
+ *
+ * These arrive as ordinary user messages with `source.kind === 'user'`, so a
+ * role check alone does not keep them out: a background-job notice was filed as
+ * a constraint and pinned to every step as 不可违反. None of it is something the
+ * human said, so none of it may become memory or reach the live thread. Prefixes
+ * are matched at the start, where injection always puts them; a person writing
+ * prose does not begin a sentence with "background job pwsh-".
+ */
+const INJECTED_PREFIXES = [
+  'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+  'Context updated.',
+  'background job ',
+  '<system-reminder>',
+  '<task-notification>',
+  '<runtime-context>',
+]
+
+function isInjectedText(text) {
+  const head = String(text ?? '').trimStart()
+  return INJECTED_PREFIXES.some((prefix) => head.startsWith(prefix))
 }
 
 /** Render the anchor text. Recomputed from the full log, so it outlives compaction. */
@@ -951,7 +976,9 @@ function recallArchived(session, state, config) {
   // surface no longer carries: archived history, not the live turn.
   const { hits } = kernelSearch(kernel, parsed, 6, (doc) => (
     doc.seq < latest.seq && !surface.has(doc.seq) && !shown.has(doc.seq) && doc.type !== 'compaction/end'
-    && !(doc.type === 'user/message' && doc.text.startsWith('用户：Current runtime context. This snapshot supersedes earlier runtime-context snapshots.'))
+    // The kernel stores "用户：<text>", so the injected-prefix test runs on the
+    // body after that label.
+    && !isInjectedText(doc.text.replace(/^(用户|助手|工具|工具调用|工具结果)：/, ''))
   ))
   if (hits.length === 0) {
     recallCache.set(session, { key: cacheKey, text: '' })
@@ -1038,7 +1065,11 @@ const MEMORY_RULES = [
   },
   {
     kind: 'constraint',
-    test: /(必须|不要|别|只能|禁止|要求|偏好|约定|规则|never|always|must|should not|don't|do not|only|required|prefer)/i,
+    // Single characters are not used here. "别" matched 发给别人 (someone else),
+    // and a question became a standing rule on that basis. Chinese has no word
+    // boundaries, so a bare 别/要/只 fires inside unrelated words constantly;
+    // every pattern below is a multi-character phrase that states an obligation.
+    test: /(必须|不要|不得|禁止|只能|仅限于|要求|偏好|约定|规则|一律|务必|never|always|must|should not|don't|do not|required|prefer)/i,
   },
   {
     kind: 'task',
@@ -1129,6 +1160,23 @@ function subjectKey(text) {
 }
 
 /**
+ * Is this the user asking for something rather than stating something?
+ *
+ * A question must never become a standing rule. "我需要发给别人这个插件…我要怎么做"
+ * was filed as a constraint and then pinned to every step as 不可违反 — a request
+ * for instructions, replayed forever as an obligation. Note there was no question
+ * mark: Chinese often asks with a bare 怎么做/如何. A strong obligation word wins
+ * over the question shape, because "必须用 30 分钟，对吗？" is still a rule.
+ */
+const QUESTION_SHAPE = /([？?]\s*$|怎么做|怎么办|怎么弄|怎么样|如何|怎样|为什么|是什么|行不行|对不对|有没有|是不是)/i
+const STRONG_OBLIGATION = /(必须|务必|不得|禁止|只能|一律|绝对不|不要|never|must)/i
+
+function isQuestion(text) {
+  if (STRONG_OBLIGATION.test(text)) return false
+  return QUESTION_SHAPE.test(text)
+}
+
+/**
  * Classify one event into zero or more memories. User messages are the strongest
  * signal (requirements and corrections live there); assistant messages carry
  * decisions and conclusions; tool calls carry files and commands.
@@ -1157,6 +1205,9 @@ function classifyEvent(event, config) {
   )
 
   if (text.length < (kindOfSource === 'tool' ? 12 : 8)) return []
+  // Injected notices carry the user role but not the user's intent; a job
+  // notification must never become a constraint.
+  if (kindOfSource === 'user' && isInjectedText(text)) return []
 
   if (kindOfSource === 'tool') {
     // A tool call is a file touch or a command — never a decision or a rule,
@@ -1171,6 +1222,9 @@ function classifyEvent(event, config) {
   }
 
   const found = []
+  // A question is a request for instructions, not a standing rule. Filed as a
+  // constraint it would be pinned to every later step as 不可违反 forever.
+  const asking = kindOfSource === 'user' && isQuestion(text)
   for (const rule of MEMORY_RULES) {
     if (!rule.test.test(text)) continue
     // Commands are read from tool calls only: a sentence that merely mentions
@@ -1185,6 +1239,8 @@ function classifyEvent(event, config) {
     // sessions. Losing a rule the model asserted is cheap; repeating the
     // model's own narration back to it as a standing requirement is not.
     if ((rule.kind === 'constraint' || rule.kind === 'decision') && kindOfSource !== 'user') continue
+    // A question is not a requirement, however it is phrased.
+    if (asking && (rule.kind === 'constraint' || rule.kind === 'decision')) continue
     found.push({ kind: rule.kind, text: clip(text, 160) })
   }
 
