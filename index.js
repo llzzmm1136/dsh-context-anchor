@@ -278,6 +278,44 @@ function priceEvent(event) {
 
 /** Projection key the Client half reads through `useProjection`. */
 const CACHE_PROJECTION = 'contextAnchorCache'
+/** Per-turn token usage so the client can price each completed turn locally. */
+const TURN_PROJECTION = 'contextAnchorTurns'
+
+/**
+ * Per-turn usage: tokens accumulate between user messages; a turn closes when
+ * its assistant message arrives. `turn` mirrors the anchor's turn counter, and
+ * `rate` (currency tokens⁻¹) is filled by the client from the balance panel.
+ */
+function registerTurnProjection(ctx) {
+  ctx.inject(['sessionProjections'], (scope) => {
+    scope.sessionProjections.register({
+      key: TURN_PROJECTION,
+      stateVersion: 1,
+      stateSchema: identitySchema,
+      init: () => ({ turn: 0, openTurn: -1, tokens: 0, closed: [] }),
+      apply: (state, event) => {
+        if (event.type === 'user/message') {
+          const openTurn = state.turn + 1
+          return { ...state, turn: openTurn, openTurn, tokens: 0, closed: state.closed }
+        }
+        if (event.type === 'assistant/message' && state.openTurn >= 0) {
+          const priced = priceEvent(event)
+          const tokens = state.tokens + (priced?.tokens ?? 0)
+          const closed = [...state.closed, { turn: state.openTurn, tokens }].slice(-50)
+          return { ...state, tokens, closed }
+        }
+        if (state.openTurn < 0) return state
+        const priced = priceEvent(event)
+        if (priced === null) return state
+        return { ...state, tokens: state.tokens + priced.tokens }
+      },
+      wire: {
+        viewSchema: identitySchema,
+        view: (state) => ({ turn: state.turn ?? 0, openTurn: state.openTurn ?? -1, tokens: state.tokens ?? 0, closed: state.closed ?? [] }),
+      },
+    })
+  })
+}
 
 /**
  * The registry only ever calls `schema.parse`, and this state is produced and
@@ -2284,6 +2322,8 @@ export function apply(ctx, rawConfig) {
 
   // The composer's "cached locally" reading: the recallable log, priced in tokens.
   registerCacheProjection(ctx)
+  // Per-turn token usage: priced with the same meter, costed by the client.
+  registerTurnProjection(ctx)
 
   // The panel's memory policy: persisted next to the harness home, applied live.
   loadSettings()

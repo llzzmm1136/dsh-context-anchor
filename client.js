@@ -405,6 +405,23 @@ window.__ModuleLoader__.load({
     /** Unplaced portal panel: hidden but laid out so the clamp measures real dimensions. */
     const MEASURE_STYLE = { visibility: 'hidden', left: 0, top: 0 };
 
+    /** Per-turn usage row: tokens priced with the rolling 24h effective rate. */
+    function makeTurnCostRow(h, React, { panelStoreRef, formatCost }) {
+      return function TurnCostRow(props) {
+        const turns = props.useProjection?.('contextAnchorTurns');
+        const panel = useStore(panelStoreRef());
+        const rate = panel?.status === 'ready' && Number(panel.window?.tokens) > 0 ? panel.window.cost / panel.window.tokens : null;
+        const closed = Array.isArray(turns?.closed) ? turns.closed : [];
+        const row = closed.at(-1);
+        if (!row || row.tokens <= 0 || rate === null) return null;
+        const cost = row.tokens * rate;
+        const perMillion = rate * 1_000_000;
+        return h('div', {
+          style: { fontSize: 11, lineHeight: '15px', color: 'var(--dsw-alias-label-tertiary)', margin: '2px 0 4px', fontVariantNumeric: 'tabular-nums' },
+        }, `本轮 ${row.tokens.toLocaleString()} tokens · 约 ${formatCost(cost, panel.currency ?? 'CNY')} · 折合 ${formatCost(perMillion, panel.currency ?? 'CNY')}/M tokens（按近24小时均价估算）`);
+      };
+    }
+
     /** The dock reading: label plus the API site account balance. */
     return {
       inject: ['slots', 'locale'],
@@ -620,6 +637,11 @@ window.__ModuleLoader__.load({
         }
 
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({name:'shell.overlay', id:'balance-panel',order:91}, BalancePanel));
+        ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+          name: 'conversation.chat.turnTail',
+          id: 'turn-cost',
+          order: 5,
+        }, makeTurnCostRow(h, React, { panelStoreRef: () => panelStore, formatCost })));
         ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
           name: 'conversation.composer.dock',
           id: 'balance',
@@ -638,7 +660,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.16.0';
+    const CLIENT_VERSION = 'v1.16.2';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
