@@ -408,8 +408,10 @@ window.__ModuleLoader__.load({
     /** Per-turn usage row: tokens priced with the rolling 24h effective rate. */
     function makeTurnCostRow(h, React, { panelStoreRef, formatCost }) {
       return function TurnCostRow(props) {
+        const store = panelStoreRef();
+        const [panel, setPanel] = React.useState(store.get());
+        React.useEffect(() => store.subscribe(() => setPanel(store.get())), []);
         const turns = props.useProjection?.('contextAnchorTurns');
-        const panel = useStore(panelStoreRef());
         const rate = panel?.status === 'ready' && Number(panel.window?.tokens) > 0 ? panel.window.cost / panel.window.tokens : null;
         const closed = Array.isArray(turns?.closed) ? turns.closed : [];
         const row = closed.at(-1);
@@ -660,7 +662,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.16.2';
+    const CLIENT_VERSION = 'v1.16.3';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
