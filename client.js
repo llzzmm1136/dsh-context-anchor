@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
       '.dshb-pill svg{flex:none;width:14px;height:14px}',
       'button.dshb-pill{cursor:pointer}',
       'button.dshb-pill:hover,button.dshb-pill[aria-expanded="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}',
-      '.dshb-panel{z-index:1100;box-sizing:border-box;border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);width:max-content;min-width:min(320px,100vw - 24px);max-width:min(560px,100vw - 24px);max-height:calc(100vh - 24px);overflow:auto;backdrop-filter:var(--dsw-menu-backdrop-filter);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-secondary);cursor:default;border:0;padding:16px;font-size:12px;line-height:18px;position:fixed}',
+      '.dshb-panel{z-index:1100;box-sizing:border-box;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-base);width:max-content;min-width:min(320px,100vw - 24px);max-width:min(560px,100vw - 24px);max-height:calc(100vh - 24px);overflow:auto;backdrop-filter:none;--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-secondary);cursor:default;border:1px solid var(--dsw-alias-border-l1);padding:16px;font-size:12px;line-height:18px;position:fixed}',
       '.dshb-title{color:var(--dsw-alias-label-primary);justify-content:space-between;gap:16px;margin-bottom:8px;font-weight:500;display:flex}',
       '.dshb-titleRule{border-top:.5px solid var(--dsw-alias-border-l2);margin-bottom:10px}',
       '.dshb-titleValue{font-variant-numeric:tabular-nums}',
@@ -498,7 +498,7 @@ window.__ModuleLoader__.load({
             h('div', { role: 'dialog', 'aria-label': '本轮消耗', onClick: event => event.stopPropagation(),
               style: { position: 'fixed', bottom: 100, left: 'max(12px, calc(50vw - 180px))', width: 360, maxWidth: 'calc(100vw - 24px)',
                 padding: 16, boxSizing: 'border-box', fontSize: 12, lineHeight: '18px', borderRadius: 'var(--dsw-radius-lg)',
-                color: 'var(--dsw-alias-label-secondary)', background: 'var(--dsw-specific-menu)', boxShadow: 'var(--dsw-elevation-prominent)' } },
+                color: 'var(--dsw-alias-label-secondary)', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l1)', boxShadow: 'var(--dsw-elevation-prominent)' } },
               h('div', { style: { display: 'flex', justifyContent: 'space-between' } }, '本轮消耗', h('button', { type: 'button', onClick: () => details.show(null), style: { font: 'inherit', color: 'inherit', background: 'transparent', border: 0, cursor: 'pointer' } }, '关闭')),
               item('本轮用量', `${value.tokens.toLocaleString()} tokens`),
               item('估算消耗', value.cost === null ? '暂无账单均价' : formatCost(value.cost, value.currency)),
@@ -714,7 +714,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.17.0';
+    const CLIENT_VERSION = 'v1.17.1';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {

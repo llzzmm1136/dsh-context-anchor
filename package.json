@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-context-anchor",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "private": true,
   "type": "module",
   "description": "余额与本地缓存：最近24小时消耗、会话记忆与全量日志检索。",
