@@ -17,7 +17,7 @@
 window.__ModuleLoader__.load({
   id: '@local/dsh-context-anchor',
   factory(require) {
-    function createBalanceModule(require) {
+    function createBalanceModule(require, mount) {
     const React = require('react');
 
     const h = React.createElement;
@@ -651,16 +651,12 @@ window.__ModuleLoader__.load({
                 cell(formatCost(row.cost, currency), 'c4', { textAlign: 'right' }))))));
         }
 
-        const mountBalance = (slot, options, component) => {
-          try {
-            ctx.slots.inject(slot, () => ctx.slots.register({ name: slot, ...options }, component))
-          } catch (error) {
-            console.warn?.(`[balance] slot ${slot} unavailable`, error)
-          }
-        }
-        mountBalance('shell.overlay', { id: 'balance-panel', order: 91 }, BalancePanel)
-        mountBalance('conversation.chat.turnTail', { id: 'turn-cost', order: 5 }, makeTurnCostRow(h, React, { panelStoreRef: () => panelStore, formatCost }))
-        mountBalance('conversation.composer.dock', { id: 'balance', order: 2, locale: NS }, BalanceReading)
+        // Registration is deferred to the caller: one plugin gets ONE inject
+        // per slot, so shipping several entries into the same slot from two
+        // separate injects silently drops all but the first.
+        mount('shell.overlay', { id: 'balance-panel', order: 91 }, BalancePanel)
+        mount('conversation.chat.turnTail', { id: 'turn-cost', order: 5 }, makeTurnCostRow(h, React, { panelStoreRef: () => panelStore, formatCost }))
+        mount('conversation.composer.dock', { id: 'balance', order: 2, locale: NS }, BalanceReading)
       },
     };
     }
@@ -673,7 +669,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.16.5';
+    const CLIENT_VERSION = 'v1.16.6';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -901,11 +897,22 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        // Collect every entry per slot, then inject each slot exactly once.
+        // A slot keeps ONE injection channel per plugin: two injects into the
+        // same slot drop everything after the first, which is how the balance
+        // panel and the per-turn row silently disappeared.
+        const pending = new Map()
+        const mount = (slot, options, component) => {
+          const list = pending.get(slot) ?? []
+          list.push({ options, component })
+          pending.set(slot, list)
+        }
+
         // The balance half is additive: if it cannot initialise, the memory
         // half must still register (a boot-blocking plugin is worse than a
         // missing badge).
         try {
-          createBalanceModule(require).apply(ctx)
+          createBalanceModule(require, mount).apply(ctx)
         } catch (error) {
           console.warn?.('[context-anchor] balance half skipped', error)
         }
@@ -1671,19 +1678,20 @@ window.__ModuleLoader__.load({
           }
         }
 
-        // One failed slot must never abort the entry: a partial plugin still
-        // renders, while a throw here blocks the whole Web boot.
-        const mount = (slot, options, component) => {
+        mount('conversation.composer.dock', { id: 'context-anchor-cache', order: 3 }, CacheBadge)
+
+        mount('shell.overlay', { id: 'context-anchor-panel', order: 90 }, PanelBoundary)
+
+        // Flush: one inject per slot, registering every entry collected for it.
+        for (const [slot, list] of pending) {
           try {
-            ctx.slots.inject(slot, () => ctx.slots.register({ name: slot, ...options }, component))
+            ctx.slots.inject(slot, () => {
+              for (const entry of list) ctx.slots.register({ name: slot, ...entry.options }, entry.component)
+            })
           } catch (error) {
             console.warn?.(`[context-anchor] slot ${slot} unavailable`, error)
           }
         }
-
-        mount('conversation.composer.dock', { id: 'context-anchor-cache', order: 3 }, CacheBadge)
-
-        mount('shell.overlay', { id: 'context-anchor-panel', order: 90 }, PanelBoundary)
       },
     };
   },

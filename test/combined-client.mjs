@@ -26,6 +26,21 @@ vm.runInNewContext(source, {
 definition.factory((name) => { assert.equal(name, 'react'); return React })
   .apply({ effect: (fn) => fn(), slots: { inject: (_, fn) => fn(), register: (options, component) => entries.push({ options, component }) } })
 
+// The loader gives a plugin ONE injection channel per slot: a second inject
+// into the same slot is dropped. Mirror that here so a regression that splits
+// one slot across two injects fails instead of silently losing entries.
+const injected = []
+const perSlot = []
+definition.factory((name) => { assert.equal(name, 'react'); return React })
+  .apply({ slots: {
+    inject: (slot, fn) => { if (injected.includes(slot)) return; injected.push(slot); fn() },
+    register: (options, component) => perSlot.push({ options, component }),
+  } })
+for (const id of ['balance', 'balance-panel', 'turn-cost', 'context-anchor-cache', 'context-anchor-panel']) {
+  assert.equal(perSlot.filter((entry) => entry.options.id === id).length, 1, `${id} survives one-inject-per-slot`)
+}
+assert.equal(injected.filter((slot) => slot === 'shell.overlay').length, 1, 'shell.overlay injected once')
+
 // A dynamic Client context without `effect`/`get` must still activate: throwing
 // here is exactly what DSH reports as "entry did not activate" and blocks boot.
 const bare = []
