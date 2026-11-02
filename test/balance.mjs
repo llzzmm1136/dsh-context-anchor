@@ -56,9 +56,9 @@ try {
   assert.ok(routes.has('/plugins/balance/colink/panel'))
 
   async function request(path, headers = {}) {
-    const definition = routes.get(path)
+    const definition = routes.get(path.split('?')[0])
     const captured = { status: 0, headers: {}, body: '' }
-    const req = { method: 'GET', headers }
+    const req = { method: 'GET', headers, url: path }
     const res = { writeHead(status, responseHeaders = {}) { captured.status = status; captured.headers = responseHeaders }, end(body = '') { captured.body = String(body) } }
     await definition.handler(req, res)
     return { ...captured, json: captured.body ? JSON.parse(captured.body) : null }
@@ -80,6 +80,10 @@ try {
   const balance = await request('/plugins/balance/colink')
   assert.equal(balance.status, 200)
   assert.equal(balance.json.balance, 12.5)
+  const before = calls.length
+  const refreshed = await request('/plugins/balance/colink/panel?refresh=1')
+  assert.equal(refreshed.status, 200)
+  assert.ok(calls.length > before, 'refresh=1 must bypass the panel cache and re-read upstream')
   const panel = await request('/plugins/balance/colink/panel')
   assert.equal(panel.status, 200)
   assert.equal(panel.json.windowHours, 24)

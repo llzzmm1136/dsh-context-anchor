@@ -290,7 +290,7 @@ function applyBalanceScope(ctx) {
     if (!force && fresh) return Promise.resolve();
     panel.inFlight = (async () => {
       try {
-        await ensure();
+        await ensure(force);
         panel.value = await readPanel();
       } catch (error) {
         console.error('[balance] colink panel reading failed', error);
@@ -325,7 +325,8 @@ function applyBalanceScope(ctx) {
           res.end(JSON.stringify({ status: 'failed' }));
           return;
         }
-        await read();
+        const force = new URL(req.url ?? path, 'http://localhost').searchParams.get('refresh') === '1';
+        await read(force);
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         res.end(JSON.stringify(path === BALANCE_PATH ? state.value : panel.value));
       },
@@ -333,7 +334,7 @@ function applyBalanceScope(ctx) {
   }
 
   ctx.effect(() => {
-    const disposers = [route(BALANCE_PATH, () => ensure()), route(PANEL_PATH, () => ensurePanel())];
+    const disposers = [route(BALANCE_PATH, force => ensure(force)), route(PANEL_PATH, force => ensurePanel(force))];
     ensure();
     return () => {
       for (const disposer of disposers) disposer();

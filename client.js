@@ -196,7 +196,7 @@ window.__ModuleLoader__.load({
     async function readBalance() {
       let res;
       try {
-        res = await window.fetch(BALANCE_ROUTE, { cache: 'no-store' });
+        res = await fetch(BALANCE_ROUTE, { cache: 'no-store', credentials: 'same-origin' });
       } catch (error) {
         console.error('[balance] reading route unreachable', error);
         return { status: 'failed' };
@@ -228,10 +228,10 @@ window.__ModuleLoader__.load({
     }
 
     /** The panel reading, fetched through the Host half's loopback route. */
-    async function readPanel() {
+    async function readPanel(force = false) {
       let res;
       try {
-        res = await window.fetch(PANEL_ROUTE, { cache: 'no-store' });
+        res = await fetch(PANEL_ROUTE + (force ? '?refresh=1' : ''), { cache: 'no-store', credentials: 'same-origin' });
       } catch (error) {
         console.error('[balance] panel route unreachable', error);
         return { status: 'failed' };
@@ -371,7 +371,7 @@ window.__ModuleLoader__.load({
           notify();
           inFlight = (async () => {
             try {
-              const next = await read();
+              const next = await read(force);
               if (next !== null && typeof next === 'object' && next.status === 'ready') {
                 readAt = Date.now();
                 failedAt = 0;
@@ -454,11 +454,20 @@ window.__ModuleLoader__.load({
           }, []);
           const t=translate;
           return h('button', { type:'button', className:'dshb-pill', 'aria-expanded':open,
+            style:{fontSize:'calc(var(--dsh-content-font-size-secondary, 13px) - 1px)',lineHeight:'20px',fontFamily:'inherit'},
             onClick:()=>setOpen(!opened) }, ICON, '余额 ', state.status==='ready' ? formatAmount(state.balance,state.currency) : '—');
         }
         function BalancePanel() {
           const open=useOpen();
           const data=useStore(panelStore);
+          const [refreshing, setRefreshing] = React.useState(false);
+          const refreshLock = React.useRef(false);
+          const refreshNow = async () => {
+            if (refreshLock.current) return;
+            refreshLock.current = true; setRefreshing(true);
+            try { await panelStore.ensure(true); await balanceStore.ensure(true); }
+            finally { refreshLock.current = false; setRefreshing(false); }
+          };
           React.useEffect(() => {
             if(!open) return;
             panelStore.ensure();
@@ -473,7 +482,9 @@ window.__ModuleLoader__.load({
           return h('div', { style:{position:'fixed',inset:0,zIndex:1100,pointerEvents:'auto'},onClick:()=>setOpen(false)},
             h('div',{className:'dshb-panel',role:'dialog','aria-label':t('panel.title'),
               onClick:e=>e.stopPropagation(),style:{left:'max(12px, calc(50vw - 280px))',bottom:80,width:560,maxWidth:'calc(100vw - 24px)',maxHeight:'calc(100vh - 104px)'}},
-              h('div',{className:'dshb-title'},t('panel.title'),h('button',{type:'button',onClick:()=>setOpen(false)},'关闭')),
+              h('div',{className:'dshb-title'},t('panel.title'),h('span',{style:{marginLeft:'auto',display:'inline-flex',gap:6}},
+                h('button',{type:'button',onClick:refreshNow,disabled:refreshing,'aria-busy':refreshing,style:{fontSize:11,padding:'1px 8px'}},refreshing?'刷新中…':'立即刷新'),
+                h('button',{type:'button',onClick:()=>setOpen(false)},'关闭'))),
               data?.status==='ready' ? h('div',null,
                 h(SummaryRows,{data,t}),h(HourlyChart,{hourly:data.hourly,window:data.window,currency:data.currency,t}),
                 h(ModelBreakdown,{models:data.models,currency:data.currency,t}),h(KeyTable,{keys:data.keys,t}),h(RecordTable,{records:data.records,currency:data.currency,t}))
