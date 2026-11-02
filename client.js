@@ -651,18 +651,16 @@ window.__ModuleLoader__.load({
                 cell(formatCost(row.cost, currency), 'c4', { textAlign: 'right' }))))));
         }
 
-        ctx.slots.inject('shell.overlay', () => ctx.slots.register({name:'shell.overlay', id:'balance-panel',order:91}, BalancePanel));
-        ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
-          name: 'conversation.chat.turnTail',
-          id: 'turn-cost',
-          order: 5,
-        }, makeTurnCostRow(h, React, { panelStoreRef: () => panelStore, formatCost })));
-        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-          name: 'conversation.composer.dock',
-          id: 'balance',
-          order: 2,
-          locale: NS,
-        }, BalanceReading));
+        const mountBalance = (slot, options, component) => {
+          try {
+            ctx.slots.inject(slot, () => ctx.slots.register({ name: slot, ...options }, component))
+          } catch (error) {
+            console.warn?.(`[balance] slot ${slot} unavailable`, error)
+          }
+        }
+        mountBalance('shell.overlay', { id: 'balance-panel', order: 91 }, BalancePanel)
+        mountBalance('conversation.chat.turnTail', { id: 'turn-cost', order: 5 }, makeTurnCostRow(h, React, { panelStoreRef: () => panelStore, formatCost }))
+        mountBalance('conversation.composer.dock', { id: 'balance', order: 2, locale: NS }, BalanceReading)
       },
     };
     }
@@ -675,7 +673,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.16.4';
+    const CLIENT_VERSION = 'v1.16.5';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -1673,17 +1671,19 @@ window.__ModuleLoader__.load({
           }
         }
 
-        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-          name: 'conversation.composer.dock',
-          id: 'context-anchor-cache',
-          order: 3,
-        }, CacheBadge));
+        // One failed slot must never abort the entry: a partial plugin still
+        // renders, while a throw here blocks the whole Web boot.
+        const mount = (slot, options, component) => {
+          try {
+            ctx.slots.inject(slot, () => ctx.slots.register({ name: slot, ...options }, component))
+          } catch (error) {
+            console.warn?.(`[context-anchor] slot ${slot} unavailable`, error)
+          }
+        }
 
-        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-          name: 'shell.overlay',
-          id: 'context-anchor-panel',
-          order: 90,
-        }, PanelBoundary));
+        mount('conversation.composer.dock', { id: 'context-anchor-cache', order: 3 }, CacheBadge)
+
+        mount('shell.overlay', { id: 'context-anchor-panel', order: 90 }, PanelBoundary)
       },
     };
   },
