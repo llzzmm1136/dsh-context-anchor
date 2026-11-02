@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.14.1';
+    const CLIENT_VERSION = 'v1.15.0';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -38,7 +38,7 @@ window.__ModuleLoader__.load({
       recallsLabel: '检索次数',
       recallsValue: (n) => (n > 0 ? `${n} 次` : '尚未检索'),
       contextLabel: '热上下文',
-      degradeLabel: '降智水平',
+      degradeLabel: '上下文压力',
       unknown: '—',
       statusIdle: '记忆就绪',
       statusRecall: '正在检索记忆…',
@@ -70,7 +70,7 @@ window.__ModuleLoader__.load({
       clearSessionsButton: (n) => `清除所有会话策略（${n}）`,
       clearSessionsHint: '只删除每个会话的单独设置，全局默认保留。',
       clearSessionsConfirm: (n) => `确定删除 ${n} 个会话的自定义策略？此操作不可撤销。`,
-      trendTitle: '历史趋势',
+      trendTitle: '本地缓存趋势（token）',
       trendEmpty: '暂无历史数据。',
       previewTitle: '下次压缩',
       previewRange: (from, to, count, total) => `seq ${from}–${to} · ${count}/${total}`,
@@ -80,7 +80,7 @@ window.__ModuleLoader__.load({
       protectLabel: '保护内容',
       protectNone: '未设置',
       protectPlaceholder: '如 README.md, src/auth/',
-      protectHint: '逗号分隔，最多 8 条。命中这些词的那一段不会被折进检查点。',
+      protectHint: '逗号分隔，最多 8 条。仅自定义压缩模式执行严格保护；自动模式不应用这些规则。',
       indexLabel: '检索索引',
       indexValue: (docs, terms) => `${docs} 篇 · ${terms} 词条`,
       anchorLabel: '本步注入',
@@ -101,7 +101,7 @@ window.__ModuleLoader__.load({
         : '尚未压缩'),
       adviceTitle: '建议',
       adviceNoCompaction: '启用 @deepseek-ai/dsh-compaction-basic 后，自定义阈值才会生效。',
-      adviceAutoHigh: (p) => `占用已到 ${p}%，切到自定义 60% 可提前压缩，减少降智。`,
+      adviceAutoHigh: (p) => `占用已到 ${p}%，切到自定义 60% 可提前压缩，降低上下文压力。`,
       adviceCustomLow: (p, t) => `当前 ${p}%，离 ${t}% 还远；这个设置偏保守，会话会一直很满。`,
       adviceNoRecall: '检索索引已建好但还没被用过：问模型一件早先的事就能验证记忆。',
       adviceProtect: '会话已很长：把关键文件路径填进保护内容，压缩时它们会留在表层。',
@@ -109,7 +109,7 @@ window.__ModuleLoader__.load({
       saveFailed: '保存失败，稍后重试。',
       policyUnavailable: '设置暂不可用：宿主还没有加载这一版，重启 DSH 后再打开面板。',
       noCompaction: '当前环境没有压缩服务，自定义阈值不会生效。',
-      note: '缓存不进上下文窗口，压缩后仍可用 context_recall 读取；降智水平按热上下文占用估算，仅供参考。',
+      note: '缓存不进上下文窗口，压缩后仍可用 context_recall 读取；压力按热上下文占用估算，不代表模型能力测量。',
       tooltip: '点击查看记忆状态与热上下文压力',
     };
 
@@ -172,15 +172,15 @@ window.__ModuleLoader__.load({
       const chartHeight = height - padding.top - padding.bottom
 
       // Find min/max for Y axis (percent range)
-      const percents = history.map(p => p.percent)
-      const minPercent = Math.max(0, Math.min(...percents) - 5)
-      const maxPercent = Math.min(100, Math.max(...percents) + 5)
+      const percents = history.map(p => Number.isFinite(p.tokens) ? Math.max(0, p.tokens) : Number.isFinite(p.percent) ? Math.max(0, p.percent * 10000) : 0)
+      const minPercent = 0
+      const maxPercent = Math.max(1, ...percents)
       const rangePercent = maxPercent - minPercent || 1
 
       // Map data points to SVG coordinates
       const points = history.map((point, i) => {
         const x = padding.left + (i / (history.length - 1 || 1)) * chartWidth
-        const y = padding.top + chartHeight - ((point.percent - minPercent) / rangePercent) * chartHeight
+        const y = padding.top + chartHeight - ((percents[i] - minPercent) / rangePercent) * chartHeight
         return { x, y, percent: point.percent }
       })
 
@@ -189,7 +189,7 @@ window.__ModuleLoader__.load({
 
       // Color based on latest percent
       const latestPercent = percents[percents.length - 1] || 0
-      const color = latestPercent < 60 ? '#4a9d5f' : latestPercent < 80 ? '#c08a3e' : '#c2554d'
+      const color = 'var(--dsw-alias-brand-primary, #4d6bfe)'
 
       return h('svg', {
         width,
@@ -197,6 +197,7 @@ window.__ModuleLoader__.load({
         viewBox: `0 0 ${width} ${height}`,
         style: { display: 'block', margin: '8px auto 0' },
       },
+      h('title', null, `${compact(latestPercent)} token`),
       h('path', {
         d: pathData,
         fill: 'none',
@@ -320,9 +321,12 @@ window.__ModuleLoader__.load({
 
           // Keep an open panel's figures live without re-opening it.
           React.useEffect(() => {
-            if (store.state.open) store.publish({ cache: cached, pressure, sessionId });
+            if (store.state.open) store.publish({ cache: cached, pressure, sessionId, open: Boolean(sessionId) });
           }, [cached, pressure, sessionId]);
 
+          React.useEffect(() => () => {
+            if (store.state.sessionId === sessionId) store.publish({ open: false, sessionId: undefined });
+          }, [sessionId]);
           if (cached === undefined || cached === null || !(cached.events > 0)) return null;
 
           const copy = COPY;
@@ -386,7 +390,7 @@ window.__ModuleLoader__.load({
 
           // Policy is read from the Host half on every open, so a second window
           // and a reloaded page always show what is actually in force.
-          const [policy, setPolicy] = React.useState(null);
+          const [storedPolicy, setPolicy] = React.useState(null);
           const [defaults, setDefaults] = React.useState(null);
           const [perSession, setPerSession] = React.useState(false);
           const [preview, setPreview] = React.useState(null);
@@ -397,42 +401,70 @@ window.__ModuleLoader__.load({
           const [compactionStats, setCompactionStats] = React.useState(null);
           const [saveError, setSaveError] = React.useState(false);
           const saveTimer = React.useRef(0);
+          const io = React.useRef({ session: state.sessionId, epoch: 0, revision: 0, queue: Promise.resolve(), dirty: false, pending: 0, reading: false, policy: null });
+          const policy = io.current.session === state.sessionId ? storedPolicy : null;
+          const [runtimeInfo, setRuntimeInfo] = React.useState(null);
+          const send = (body) => fetch(SETTINGS_API, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+            .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))));
+          const paint = (data, includePolicy = true) => {
+            if (includePolicy) {
+              io.current.policy = typeof data?.settings === 'object' ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false } : false;
+              setPolicy(io.current.policy);
+              setDefaults(data?.defaults ?? null);
+              setPerSession(data?.perSession === true);
+              setSessionCount(data?.sessionCount ?? 0);
+            }
+            setRuntimeInfo(data?.runtime ?? null);
+            setPreview(data?.preview ?? null);
+            setIndexStats(data?.index ?? null);
+            setAnchorStats(data?.anchor ?? null);
+            setMemoryStats(data?.memory ?? null);
+            setCompactionStats(data?.compactions ?? null);
+          };
+          const cancelSave = () => { clearTimeout(saveTimer.current); saveTimer.current = 0; io.current.revision += 1; io.current.dirty = false; };
+          const mutate = (body) => {
+            const token = { session: state.sessionId, epoch: io.current.epoch, revision: io.current.revision };
+            const valid = () => io.current.epoch === token.epoch && io.current.session === token.session && io.current.revision === token.revision;
+            io.current.pending += 1;
+            const result = io.current.queue.then(async () => {
+              if (!valid()) return;
+              const data = await send({ ...body, session: token.session });
+              const payload = body.action === 'import' ? await send({ action: 'read', session: token.session }) : data;
+              if (valid()) { io.current.dirty = false; paint(payload); setSaveError(false); }
+            }).catch(() => { if (valid()) setSaveError(true); }).finally(() => { io.current.pending -= 1; });
+            io.current.queue = result;
+            return result;
+          };
 
           React.useEffect(() => {
-            if (!state.open) return undefined;
-            let cancelled = false;
-            fetch(SETTINGS_API, {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ action: 'read', session: state.sessionId }),
-            })
-              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-              .then((data) => {
-                if (cancelled) return;
-                setPolicy(typeof data?.settings === 'object'
-                  ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
-                  : false);
-                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
-                setPerSession(data?.perSession === true);
-                setPreview(typeof data?.preview === 'object' ? data.preview : null);
-                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
-                setIndexStats(typeof data?.index === 'object' ? data.index : null);
-                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
-                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
-                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
-                setSaveError(false);
-              })
-              .catch(() => {
-                if (!cancelled) setPolicy(false);
-              });
-            return () => {
-              cancelled = true;
+            const current = io.current;
+            current.epoch += 1;
+            current.session = state.sessionId;
+            current.policy = null;
+            current.reading = false;
+            cancelSave();
+            setPolicy(null); setPreview(null); setIndexStats(null); setAnchorStats(null); setMemoryStats(null); setCompactionStats(null);
+            const epoch = current.epoch;
+            if (!state.open || !state.sessionId) return undefined;
+            let disposed = false;
+            const refresh = async () => {
+              if (disposed || current.reading || current.pending) return;
+              current.reading = true;
+              const revision = current.revision;
+              try {
+                const data = await send({ action: 'read', session: state.sessionId });
+                if (!disposed && current.epoch === epoch && current.revision === revision) {
+                  paint(data, !current.dirty);
+                  if (!current.dirty) setSaveError(false);
+                }
+              } catch {
+                if (!disposed && current.epoch === epoch && current.policy === null) setPolicy(false);
+              } finally { if (current.epoch === epoch) current.reading = false; }
             };
-          }, [state.open]);
-
-          React.useEffect(() => () => clearTimeout(saveTimer.current), []);
-
+            refresh();
+            const timer = setInterval(refresh, 1500);
+            return () => { disposed = true; clearInterval(timer); cancelSave(); current.epoch += 1; };
+          }, [state.open, state.sessionId]);
           // Esc closes the panel. The loader's `window` is a shim WITHOUT
           // addEventListener — a real crash found via the client-error trace —
           // so pick the first event target that actually works and drop the
@@ -453,107 +485,29 @@ window.__ModuleLoader__.load({
             return () => target.removeEventListener('keydown', onKeyDown);
           }, [state.open]);
 
-          const savePolicy = (next) => {
-            fetch(SETTINGS_API, {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                action: 'save',
-                session: state.sessionId,
-                mode: next.mode,
-                percent: next.percent,
-                autoRecall: next.autoRecall,
-                protect: Array.isArray(next.protect) ? next.protect : [],
-              }),
-            })
-              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-              .then((data) => {
-                setPolicy(typeof data?.settings === 'object'
-                  ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
-                  : next);
-                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
-                setPerSession(data?.perSession === true);
-                setPreview(typeof data?.preview === 'object' ? data.preview : null);
-                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
-                setIndexStats(typeof data?.index === 'object' ? data.index : null);
-                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
-                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
-                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
-                setSaveError(false);
-              })
-              .catch(() => setSaveError(true));
-          };
-
-          /** Paint the change immediately; persist once the control settles. */
+          const savePolicy = (next) => mutate({ action: 'save', mode: next.mode, percent: next.percent, autoRecall: next.autoRecall, protect: Array.isArray(next.protect) ? next.protect : [] });
           const updatePolicy = (patch) => {
-            if (policy === null || policy === false) return;
-            const next = { ...policy, ...patch };
-            setPolicy(next);
-            setSaveError(false);
-            clearTimeout(saveTimer.current);
-            saveTimer.current = setTimeout(() => savePolicy(next), 220);
+            if (!state.sessionId || !io.current.policy || io.current.session !== state.sessionId) return;
+            const next = { ...io.current.policy, ...patch };
+            cancelSave(); io.current.dirty = true; io.current.policy = next;
+            setPolicy(next); setSaveError(false);
+            saveTimer.current = setTimeout(() => { saveTimer.current = 0; savePolicy(next); }, 220);
           };
-
-          /** Delete per-session override and revert to global defaults. */
           const deletePolicy = () => {
             if (!perSession || !state.sessionId) return;
-            fetch(SETTINGS_API, {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ action: 'delete', session: state.sessionId }),
-            })
-              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-              .then((data) => {
-                setPolicy(typeof data?.settings === 'object'
-                  ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
-                  : null);
-                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
-                setPerSession(data?.perSession === true);
-                setPreview(typeof data?.preview === 'object' ? data.preview : null);
-                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
-                setIndexStats(typeof data?.index === 'object' ? data.index : null);
-                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
-                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
-                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
-                setSaveError(false);
-              })
-              .catch(() => setSaveError(true));
+            cancelSave(); mutate({ action: 'delete' });
           };
-
-          /** Drop every per-session override at once, keeping the global default. */
+          const [clearArmed, setClearArmed] = React.useState(false);
           const clearSessions = () => {
-            if (sessionCount === 0) return;
-            // The shim's window has no confirm; proceed rather than crash —
-            // the button is destructive, but a missing dialog is not fatal.
-            if (typeof window?.confirm === 'function' && !window.confirm(copy.clearSessionsConfirm(sessionCount))) return;
-            fetch(SETTINGS_API, {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ action: 'clear-sessions', session: state.sessionId }),
-            })
-              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-              .then((data) => {
-                setPolicy(typeof data?.settings === 'object'
-                  ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
-                  : null);
-                setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
-                setPerSession(data?.perSession === true);
-                setPreview(typeof data?.preview === 'object' ? data.preview : null);
-                setSessionCount(typeof data?.sessionCount === 'number' ? data.sessionCount : 0);
-                setIndexStats(typeof data?.index === 'object' ? data.index : null);
-                setAnchorStats(typeof data?.anchor === 'object' ? data.anchor : null);
-                setMemoryStats(typeof data?.memory === 'object' ? data.memory : null);
-                setCompactionStats(typeof data?.compactions === 'object' ? data.compactions : null);
-                setSaveError(false);
-              })
-              .catch(() => setSaveError(true));
+            if (!sessionCount) return;
+            const confirmHost = typeof globalThis.confirm === 'function' ? globalThis : typeof window !== 'undefined' && typeof window.confirm === 'function' ? window : null;
+            if (confirmHost) { if (!confirmHost.confirm(COPY.clearSessionsConfirm(sessionCount))) return; }
+            else if (!clearArmed) { setClearArmed(true); return; }
+            setClearArmed(false); cancelSave(); mutate({ action: 'clear-sessions' });
           };
-
           /** Export all settings to a JSON file. */
-          const exportSettings = () => {            fetch(SETTINGS_API, {
+          const exportSettings = () => {
+            fetch(SETTINGS_API, {
               method: 'POST',
               credentials: 'same-origin',
               headers: { 'content-type': 'application/json' },
@@ -574,6 +528,8 @@ window.__ModuleLoader__.load({
 
           /** Import settings from a JSON file. */
           const importSettings = () => {
+            const importEpoch = io.current.epoch;
+            const importSession = state.sessionId;
             const input = document.createElement('input');
             input.type = 'file';
             input.accept = 'application/json';
@@ -583,34 +539,9 @@ window.__ModuleLoader__.load({
               const reader = new FileReader();
               reader.onload = () => {
                 try {
+                  if (io.current.epoch !== importEpoch || store.state.sessionId !== importSession) return;
                   const data = JSON.parse(reader.result);
-                  fetch(SETTINGS_API, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ action: 'import', data }),
-                  })
-                    .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-                    .then(() => {
-                      // Reload current policy after import
-                      fetch(SETTINGS_API, {
-                        method: 'POST',
-                        credentials: 'same-origin',
-                        headers: { 'content-type': 'application/json' },
-                        body: JSON.stringify({ action: 'read', session: state.sessionId }),
-                      })
-                        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-                        .then((data) => {
-                          setPolicy(typeof data?.settings === 'object'
-                            ? { ...data.settings, limits: data.limits, compaction: data.compaction !== false }
-                            : null);
-                          setDefaults(typeof data?.defaults === 'object' ? data.defaults : null);
-                          setPerSession(data?.perSession === true);
-                          setSaveError(false);
-                        })
-                        .catch(() => setSaveError(true));
-                    })
-                    .catch(() => setSaveError(true));
+                  cancelSave(); mutate({ action: 'import', data });
                 } catch {
                   setSaveError(true);
                 }
@@ -749,7 +680,8 @@ window.__ModuleLoader__.load({
                 },
               }, h('div', { style: { height: '100%', width: `${percent}%`, background: tier.tone } })))),
           h('div', { style: { display: 'grid', gap: 2, marginTop: 8 } },
-            row('anchor', copy.anchorLabel, anchorStats && typeof anchorStats.chars === 'number'
+            runtimeInfo && row('runtime', '运行版本', 'Host ' + (runtimeInfo.hostVersion ?? '未知') + ' · Client ' + CLIENT_VERSION),
+           row('anchor', copy.anchorLabel, anchorStats && typeof anchorStats.chars === 'number'
               ? copy.anchorValue(anchorStats.chars, anchorStats.tokens ?? 0, anchorStats.recalled === true, anchorStats.dropped ?? 0)
               : copy.anchorNone),
             memoryStats && typeof memoryStats === 'object'
@@ -988,7 +920,7 @@ window.__ModuleLoader__.load({
               e.currentTarget.style.background = 'transparent';
               e.currentTarget.style.borderColor = 'var(--dsw-alias-stroke-secondary)';
             },
-          }, copy.clearSessionsButton(sessionCount)),
+          }, clearArmed ? '再次点击确认清除' : copy.clearSessionsButton(sessionCount)),
           sessionCount > 0 && h('div', { style: hint }, copy.clearSessionsHint),
           advice !== null && h('div', {
             key: 'advice',

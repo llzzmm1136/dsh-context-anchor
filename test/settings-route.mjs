@@ -10,6 +10,9 @@
 
 import './isolate.mjs'
 import { apply } from '../index.js'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { testHome } from './isolate.mjs'
 
 class FakeSession {
   constructor(id) {
@@ -42,15 +45,26 @@ session.push('compaction/end', { summary: 'second', checkpoint: 2 })
 
 /** One registered webServer route, so the handler can be invoked for real. */
 let route = null
+let rejection
+let preStep
+let compactCalls = 0
+const selectedScope = { get(name) {
+  if (name === 'compaction') return { compactRegion() { compactCalls += 1; throw new Error('test must not compact') } }
+  if (name === 'tokenMeter') return { measure: () => ({ totalTokens: 600 }) }
+  return undefined
+} }
+session.requestContext = () => ({ contextWindow: 1000 })
+for (let i = 0; i < 16; i += 1) session.push(i % 4 === 0 ? 'user/message' : 'assistant/message', { role: 'user', source: { kind: 'user' }, content: text(`scope sample ${i}`) })
+session.surface.nodes = session.events.map((event) => event.seq)
 const tools = new Map()
 const ctx = {
   logger: { info() {}, warn(message) { console.error('WARN', message) } },
   systemPrompt: { context: () => () => {} },
   tools: { register: (definition) => { tools.set(definition.name, definition); return () => tools.delete(definition.name) } },
   effect(factory) { return factory() },
-  on() { return () => {} },
+  on(name, callback) { if (name === 'agent/pre-step') preStep = callback; return () => {} },
   get(name) {
-    if (name === 'agents') return { list: () => [{ ctx: { get: () => undefined }, session }] }
+    if (name === 'agents') return { list: () => [{ ctx: selectedScope, session }, { ctx: { get: () => undefined }, session: new FakeSession('no-service') }] }
     return undefined
   },
   inject(names, callback) {
@@ -62,7 +76,7 @@ const ctx = {
         return () => { route = null }
       },
     }
-    scope.connection = { requestRejection: () => undefined }
+    scope.connection = { requestRejection: () => rejection }
     callback(scope)
   },
 }
@@ -143,7 +157,51 @@ const exported = await call('POST', '/api/dsh-context-anchor/settings', { action
 check('export returns both layers', typeof exported.json?.settings === 'object' && typeof exported.json?.sessions === 'object', JSON.stringify(exported.json))
 
 const bad = await call('POST', '/api/dsh-context-anchor/settings', { action: 'nope' })
-check('an unknown action still answers', bad.status === 200, JSON.stringify(bad))
+check('an unknown action is rejected', bad.status === 400, JSON.stringify(bad))
+check('runtime metadata comes from loaded Host code', read.json?.runtime?.hostVersion === '1.15.0' && typeof read.json?.runtime?.strategyVersion === 'string')
+check('protection scope is explicit', read.json?.protection?.scope === 'custom-only' && read.json?.protection?.strict === true)
+check('preview uses selected agent meter', read.json?.preview?.percent === 60, JSON.stringify(read.json?.preview))
+const unavailable = await call('POST', '/api/dsh-context-anchor/settings', { action: 'read', session: 'no-service' })
+check('other agents cannot grant selected session capability', unavailable.json?.compaction === false)
+for (const code of [401, 403]) {
+  rejection = code
+  check(`authorization ${code} remains enforced`, (await call('POST', '/api/dsh-context-anchor/settings', { action: 'save', percent: 33 })).status === code)
+}
+rejection = undefined
+const unicodePolicies = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`会话${i}`, { mode: 'custom', percent: 50, autoRecall: true, protect: Array.from({ length: 8 }, (_, j) => `${j}${'保护文字'.repeat(15)}`) }]))
+const unicodeImport = { action: 'import', data: { settings: { percent: 60 }, sessions: unicodePolicies } }
+check('Unicode fixture exceeds old 8KB limit', Buffer.byteLength(JSON.stringify(unicodeImport), 'utf8') > 8192)
+check('bounded Unicode import succeeds', (await call('POST', '/api/dsh-context-anchor/settings', unicodeImport)).status === 200)
+check('array import is rejected', (await call('POST', '/api/dsh-context-anchor/settings', { action: 'import', data: [] })).status === 400)
+await call('POST', '/api/dsh-context-anchor/settings', { action: 'unknown' })
+check('unknown action preserves configured global policy', (await call('POST', '/api/dsh-context-anchor/settings', { action: 'read' })).json?.settings?.percent === 60)
+const unicodeExport = await call('POST', '/api/dsh-context-anchor/settings', { action: 'export' })
+check('exported Unicode settings can be imported', (await call('POST', '/api/dsh-context-anchor/settings', { action: 'import', data: unicodeExport.json })).status === 200)
+check('oversized UTF-8 request returns 413', (await call('POST', '/api/dsh-context-anchor/settings', { action: 'import', data: { padding: '字'.repeat(24000) } })).status === 413)
+const settingsPath = join(testHome, 'storages', 'context-anchor', 'settings.json')
+const beforeDisk = readFileSync(settingsPath, 'utf8')
+const beforeExport = (await call('POST', '/api/dsh-context-anchor/settings', { action: 'export' })).json
+const blocker = `${settingsPath}.tmp`
+mkdirSync(blocker)
+for (const body of [
+  { action: 'save', mode: 'custom', percent: 35 },
+  { action: 'save', session: '会话0', percent: 35 },
+  { action: 'delete', session: '会话0' },
+  { action: 'clear-sessions' },
+  { action: 'import', data: { settings: { percent: 35 }, sessions: {} } },
+]) {
+  const failed = await call('POST', '/api/dsh-context-anchor/settings', body)
+  check(`failed ${body.action} reports failure`, failed.status === 500)
+  check(`failed ${body.action} leaves effective settings unchanged`, JSON.stringify((await call('POST', '/api/dsh-context-anchor/settings', { action: 'export' })).json) === JSON.stringify(beforeExport))
+  check(`failed ${body.action} leaves disk unchanged`, readFileSync(settingsPath, 'utf8') === beforeDisk)
+}
+rmSync(blocker, { recursive: true })
+check('writes recover after transient failure', (await call('POST', '/api/dsh-context-anchor/settings', { action: 'save', percent: 65 })).status === 200)
+check('malformed session policy import rejected', (await call('POST', '/api/dsh-context-anchor/settings', { action: 'import', data: { sessions: { bad: [] } } })).status === 400)
+await call('POST', '/api/dsh-context-anchor/settings', { action: 'save', session: 'session-a', mode: 'custom', percent: 30, protect: ['必须使用 UTF-8'] })
+let nextCalls = 0
+await preStep({ agent: { session, ctx: selectedScope } }, () => { nextCalls += 1 })
+check('strict protection prevents service call in actual pre-step path', compactCalls === 0 && nextCalls === 1)
 
 console.log(failures === 0 ? '\nSETTINGS ROUTE CHECKS PASSED' : `\n${failures} SETTINGS ROUTE CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

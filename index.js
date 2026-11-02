@@ -57,6 +57,10 @@ const SETTINGS_PATH_SEGMENTS = ['storages', 'context-anchor', 'settings.json']
 const MEMORY_PATH_SEGMENTS = ['storages', 'context-anchor', 'memory.json']
 const SETTINGS_ROUTE = '/api/dsh-context-anchor'
 const MAX_HISTORY_POINTS = 50
+const HOST_VERSION = '1.15.0'
+const STRATEGY_VERSION = 'stages3-4-v1'
+const SETTINGS_BODY_MAX = 64 * 1024
+const SETTINGS_EXPORT_MAX = SETTINGS_BODY_MAX - 2048
 
 /** Global defaults for this host process; replaced wholesale on every save. */
 let settings = { ...SETTINGS_DEFAULT }
@@ -323,7 +327,7 @@ function registerCacheProjection(ctx) {
         let nextHistory = state.history ?? []
         if (priced !== null && event.time) {
           const percent = Math.round((nextTokens / 1_000_000) * 100)
-          nextHistory = [...nextHistory, { time: event.time, percent }]
+          nextHistory = [...nextHistory, { time: event.time, tokens: nextTokens, percent }]
           if (nextHistory.length > MAX_HISTORY_POINTS) {
             nextHistory = nextHistory.slice(-MAX_HISTORY_POINTS)
           }
@@ -1514,9 +1518,9 @@ function occupancyOf(scope, session) {
  *
  * The first protected event inside the region becomes the new boundary, then
  * the boundary retreats to the nearest turn start (never splitting a pair). A
- * floor keeps the rule from paralyzing compaction: if honouring it would leave
- * under a quarter of the original region to archive, the base cut stands — a
- * protected phrase must not be able to disable compaction entirely.
+ * floor requires a useful prefix to archive. If protection leaves less than
+ * that prefix, this plugin skips its custom early compaction; protection never
+ * silently falls back to the unprotected cut.
  */
 function shrinkForProtection(session, nodes, startIndex, endIndex, protect) {
   if (!Array.isArray(protect) || protect.length === 0) return endIndex
@@ -1536,10 +1540,16 @@ function shrinkForProtection(session, nodes, startIndex, endIndex, protect) {
   if (hitIndex < 0) return endIndex
 
   let next = hitIndex - 1
-  while (next > startIndex + 1 && session.eventAt(nodes[next + 1])?.type !== 'user/message') next -= 1
 
   const floor = startIndex + Math.max(2, Math.floor((endIndex - startIndex) * 0.25))
-  if (next <= startIndex + 1 || next < floor) return endIndex
+  // Protection is strict: if keeping a useful prefix would cross the safety
+  // floor, reject this compaction rather than silently archive the match.
+  if (next <= startIndex + 1 || next < floor) return null
+  // The archive boundary must remain a turn boundary. If the hit is in the
+  // first event of a turn, the previous event may be the turn's user message;
+  // retreat one more complete turn instead of cutting immediately before it.
+  while (next > startIndex + 1 && session.eventAt(nodes[next + 1])?.type !== 'user/message') next -= 1
+  if (next <= startIndex + 1 || next < floor || session.eventAt(nodes[next + 1])?.type !== 'user/message') return null
   return next
 }
 
@@ -1581,7 +1591,8 @@ function archiveRegionOf(session, protect = []) {
 
   const baseEnd = endIndex
   endIndex = shrinkForProtection(session, nodes, startIndex, endIndex, protect)
-  return { nodes, startIndex, endIndex, baseEnd, protected: endIndex !== baseEnd }
+  if (endIndex === null) return { skip: 'protected-region', protected: true, protectionScope: 'custom-only' }
+  return { nodes, startIndex, endIndex, baseEnd, protected: endIndex !== baseEnd, protectionScope: 'custom-only' }
 }
 
 async function compactEarly(scope, session, agent, signal) {
@@ -1722,12 +1733,12 @@ function sendJson(res, status, value) {
 }
 
 /** Read a small JSON body. */
-async function readJsonBody(req) {
+async function readJsonBody(req, limit = SETTINGS_BODY_MAX) {
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > 8_192) throw new Error('request body is too large')
+    if (size > limit) throw new Error('request body is too large')
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
@@ -1741,11 +1752,15 @@ function settingsPayload(scope, sessionId, config) {
   // service that can actually compact it.
   const agents = scope.get('agents')
   const live = typeof agents?.list === 'function' ? agents.list() : []
-  const fromAgents = live.some((agent) => agent?.ctx?.get?.('compaction') !== undefined)
   const scoped = typeof sessionId === 'string' && sessionId.length > 0
-  const session = liveSessionOf(scope, sessionId)
+  const selected = scoped ? live.find((agent) => sessionIdOf(agent?.session) === sessionId) : undefined
+  const session = selected?.session
+  const selectedScope = selected?.ctx ?? (scoped ? undefined : scope)
   const policy = settingsFor(sessionId)
   return {
+    runtime: { hostVersion: HOST_VERSION, strategyVersion: STRATEGY_VERSION },
+    protection: { scope: 'custom-only', strict: true, active: policy.mode === 'custom' },
+    transferLimits: { requestBytes: SETTINGS_BODY_MAX, exportBytes: SETTINGS_EXPORT_MAX },
     settings: policy,
     defaults: settings,
     perSession: scoped,
@@ -1760,8 +1775,8 @@ function settingsPayload(scope, sessionId, config) {
     compactions: session === undefined || config === undefined
       ? undefined
       : compactionStatsOf(session, config),
-    compaction: fromAgents || scope.get('compaction') !== undefined,
-    preview: session === undefined ? undefined : archivePreviewOf(scope, session, policy.protect),
+    compaction: typeof selectedScope?.get?.('compaction')?.compactRegion === 'function',
+    preview: session === undefined || selectedScope === undefined ? undefined : archivePreviewOf(selectedScope, session, policy.mode === 'custom' ? policy.protect : []),
   }
 }
 
@@ -1807,6 +1822,11 @@ function registerSettingsRoute(ctx, config) {
         }
         try {
           const body = await readJsonBody(req)
+          const actions = new Set(['read', 'client-error', 'delete', 'clear-sessions', 'export', 'import', 'save'])
+          if (!isObject(body) || Array.isArray(body) || !actions.has(body.action)) {
+            sendJson(res, 400, { error: 'unknown action' })
+            return
+          }
           const sessionId = typeof body?.session === 'string' && body.session.length > 0
             ? body.session
             : querySession
@@ -1829,8 +1849,8 @@ function registerSettingsRoute(ctx, config) {
             // Delete per-session override; only valid when sessionId is present
             if (typeof sessionId === 'string' && sessionId.length > 0) {
               const { [sessionId]: _, ...rest } = sessionPolicies
+              persistSettings(settings, rest)
               sessionPolicies = rest
-              persistSettings(settings, sessionPolicies)
               sendJson(res, 200, settingsPayload(scope, sessionId, config))
             } else {
               sendJson(res, 400, { error: 'delete requires a session id' })
@@ -1839,49 +1859,67 @@ function registerSettingsRoute(ctx, config) {
           }
           if (isObject(body) && body.action === 'clear-sessions') {
             // Drop every per-session override at once, keeping the global default.
-            sessionPolicies = Object.create(null)
-            persistSettings(settings, sessionPolicies)
+            const cleared = Object.create(null)
+            persistSettings(settings, cleared)
+            sessionPolicies = cleared
             sendJson(res, 200, settingsPayload(scope, sessionId, config))
             return
           }
           if (isObject(body) && body.action === 'export') {
             // Export complete settings: global + all session overrides
-            sendJson(res, 200, {
-              settings,
-              sessions: sessionPolicies,
-            })
+            const exported = { settings, sessions: sessionPolicies }
+            if (Buffer.byteLength(JSON.stringify(exported), 'utf8') > SETTINGS_EXPORT_MAX) {
+              sendJson(res, 413, { error: 'settings export exceeds transfer limit' })
+              return
+            }
+            sendJson(res, 200, exported)
             return
           }
           if (isObject(body) && body.action === 'import') {
             // Import complete settings; replaces everything
             const imported = body.data
-            if (!isObject(imported)) {
+            if (!isObject(imported) || Array.isArray(imported)) {
               sendJson(res, 400, { error: 'import data must be an object' })
               return
             }
-            settings = normalizeSettings(imported.settings ?? imported)
-            sessionPolicies = isObject(imported.sessions) ? imported.sessions : Object.create(null)
-            // Normalize each session policy
-            for (const sid in sessionPolicies) {
-              if (Object.prototype.hasOwnProperty.call(sessionPolicies, sid)) {
-                sessionPolicies[sid] = normalizeSettings(sessionPolicies[sid])
-              }
+            if ((imported.settings !== undefined && (!isObject(imported.settings) || Array.isArray(imported.settings)))
+              || (imported.sessions !== undefined && (!isObject(imported.sessions) || Array.isArray(imported.sessions)))
+              || Object.values(imported.sessions ?? {}).some((policy) => !isObject(policy) || Array.isArray(policy))) {
+              sendJson(res, 400, { error: 'invalid settings import shape' })
+              return
             }
-            persistSettings(settings, sessionPolicies)
+            const nextSettings = normalizeSettings(imported.settings ?? imported)
+            const nextPolicies = Object.create(null)
+            if (isObject(imported.sessions) && !Array.isArray(imported.sessions)) {
+              for (const [sid, policy] of Object.entries(imported.sessions)) nextPolicies[sid] = normalizeSettings(policy)
+            }
+            const normalized = { settings: nextSettings, sessions: nextPolicies }
+            if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > SETTINGS_EXPORT_MAX) {
+              sendJson(res, 413, { error: 'settings import exceeds transfer limit' })
+              return
+            }
+            persistSettings(nextSettings, nextPolicies)
+            settings = nextSettings
+            sessionPolicies = nextPolicies
             sendJson(res, 200, { success: true })
             return
           }
           const next = normalizeSettings(body)
-          if (typeof sessionId === 'string' && sessionId.length > 0) {
-            sessionPolicies = { ...sessionPolicies, [sessionId]: next }
-          } else {
-            settings = next
+          const scopedSave = typeof sessionId === 'string' && sessionId.length > 0
+          const nextSettings = scopedSave ? settings : next
+          const nextPolicies = scopedSave ? { ...sessionPolicies, [sessionId]: next } : sessionPolicies
+          if (Buffer.byteLength(JSON.stringify({ settings: nextSettings, sessions: nextPolicies }), 'utf8') > SETTINGS_EXPORT_MAX) {
+            sendJson(res, 413, { error: 'settings exceed transfer limit' })
+            return
           }
-          persistSettings(settings, sessionPolicies)
+          persistSettings(nextSettings, nextPolicies)
+          settings = nextSettings
+          sessionPolicies = nextPolicies
           sendJson(res, 200, settingsPayload(scope, sessionId, config))
         } catch (error) {
           scope.logger?.warn?.(`context-anchor: settings save failed: ${String(error)}`)
-          sendJson(res, 500, { error: 'settings could not be saved' })
+          const status = String(error?.message).includes('request body is too large') ? 413 : error instanceof SyntaxError ? 400 : 500
+          sendJson(res, status, { error: status === 413 ? 'request body is too large' : status === 400 ? 'invalid JSON body' : 'settings could not be saved' })
         }
       },
     }))

@@ -131,12 +131,21 @@ check('no-surface guard', archiveRegionOf({}).skip, 'no-surface')
   check('unmatched needle is a no-op', [region.endIndex, region.protected], [12, false])
 }
 
-// 10) A needle matching right at the start must not paralyze compaction: the
-//     floor keeps the base cut instead of archiving nothing.
+// 10) Strict protection skips instead of silently archiving an early match.
 {
   const session = makeSession(20)
   const region = archiveRegionOf(session, ['msg 2'])
-  check('floor keeps base cut', [region.endIndex, region.protected], [12, false])
+  check('early protection skips compaction', [region.skip, region.protected], ['protected-region', true])
+  for (let hit = 1; hit <= 12; hit += 1) {
+    const protectedRegion = archiveRegionOf(session, [`msg ${hit}`])
+    if (protectedRegion.skip) {
+      check(`protected hit ${hit} reports skip`, protectedRegion.skip, 'protected-region')
+    } else {
+      const archived = protectedRegion.nodes.slice(protectedRegion.startIndex, protectedRegion.endIndex + 1)
+      check(`protected hit ${hit} is outside cut`, archived.includes(hit), false)
+      check(`protected hit ${hit} keeps turn boundary`, session.eventAt(protectedRegion.nodes[protectedRegion.endIndex + 1]).type, 'user/message')
+    }
+  }
 }
 
 // 11) Needles are case-insensitive and substring-based, like a path fragment.

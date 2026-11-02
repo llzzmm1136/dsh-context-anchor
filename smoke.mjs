@@ -160,6 +160,7 @@ const cache = projection.wire.viewSchema.parse(projection.wire.view(cacheState))
 check('prices every recallable event', cache.events === 5, JSON.stringify(cache))
 check('counts characters of recallable content', cache.chars > 40, JSON.stringify(cache))
 check('prices tokens at the meter density', cache.tokens > 0 && cache.tokens < cache.chars, JSON.stringify(cache))
+check('cache trend carries cumulative token samples', cache.history.length > 0 && cache.history.at(-1).tokens === cache.tokens, JSON.stringify(cache.history))
 check('ignores events without content', projection.apply(cacheState, { type: 'turn/end', data: {} }) === cacheState)
 
 const recallCall = {
@@ -167,6 +168,7 @@ const recallCall = {
   data: { turn: 1, step: 3, callId: 'c2', name: 'context_recall', arguments: JSON.stringify({ query: 'chart' }) },
 }
 const duringRecall = projection.apply(cacheState, recallCall)
+check('history records cumulative token units', duringRecall.history.at(-1)?.tokens === duringRecall.tokens, JSON.stringify(duringRecall.history))
 check(
   'a recall call marks the memory as searching',
   duringRecall.activity === 'recall' && duringRecall.recalls === 1,
