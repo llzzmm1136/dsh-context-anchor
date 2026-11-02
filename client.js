@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.15.0';
+    const CLIENT_VERSION = 'v1.15.1';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -507,14 +507,21 @@ window.__ModuleLoader__.load({
           };
           /** Export all settings to a JSON file. */
           const exportSettings = () => {
-            fetch(SETTINGS_API, {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ action: 'export' }),
-            })
-              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-              .then((data) => {
+            // Flush the visible edit before reading the snapshot. A failed save
+            // leaves dirty=true, so exporting cannot silently download old data.
+            if (io.current.session !== state.sessionId) return;
+            if (saveTimer.current || io.current.dirty) {
+              clearTimeout(saveTimer.current);
+              saveTimer.current = 0;
+              savePolicy(io.current.policy);
+            }
+            const token = { epoch: io.current.epoch, revision: io.current.revision };
+            const valid = () => io.current.epoch === token.epoch && io.current.revision === token.revision;
+            io.current.pending += 1;
+            const result = io.current.queue.then(async () => {
+              if (!valid() || io.current.dirty) return;
+              const data = await send({ action: 'export' });
+              if (!valid()) return;
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -523,7 +530,9 @@ window.__ModuleLoader__.load({
                 a.click();
                 URL.revokeObjectURL(url);
               })
-              .catch(() => setSaveError(true));
+              .catch(() => { if (valid()) setSaveError(true); })
+              .finally(() => { io.current.pending -= 1; });
+            io.current.queue = result;
           };
 
           /** Import settings from a JSON file. */
