@@ -26,6 +26,13 @@ vm.runInNewContext(source, {
 definition.factory((name) => { assert.equal(name, 'react'); return React })
   .apply({ effect: (fn) => fn(), slots: { inject: (_, fn) => fn(), register: (options, component) => entries.push({ options, component }) } })
 
+// A dynamic Client context without `effect`/`get` must still activate: throwing
+// here is exactly what DSH reports as "entry did not activate" and blocks boot.
+const bare = []
+definition.factory((name) => { assert.equal(name, 'react'); return React })
+  .apply({ slots: { inject: (_, fn) => fn(), register: (options, component) => bare.push({ options, component }) } })
+assert.deepEqual(bare.map((entry) => entry.options.id).sort(), entries.map((entry) => entry.options.id).sort())
+
 for (const id of ['balance', 'balance-panel', 'turn-cost', 'context-anchor-cache', 'context-anchor-panel']) {
   assert.equal(entries.filter((entry) => entry.options.id === id).length, 1, id)
 }

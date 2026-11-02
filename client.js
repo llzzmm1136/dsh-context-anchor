@@ -428,13 +428,26 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
+    // A dynamic Client context does not necessarily expose `effect`; never let
+    // a lifecycle helper take the whole entry down (that reads as "did not
+    // activate" and blocks the Web UI from booting).
+    const lifecycle = (factory) => {
+      try {
+        if (typeof ctx.effect === 'function') return ctx.effect(factory)
+        const cleanup = factory()
+        return () => { try { cleanup?.() } catch { /* unload must not throw */ } }
+      } catch (error) {
+        console.warn?.('[context-anchor] balance lifecycle skipped', error)
+        return () => {}
+      }
+    }
 
     if (typeof document !== 'undefined' && typeof document.querySelector === 'function' && document.querySelector('style[data-plugin-css="@local/dsh-balance/panel.css"]') === null) {
       const tag = document.createElement('style');
       tag.dataset.plugin = '@local/dsh-balance';
       tag.dataset.pluginCss = '@local/dsh-balance/panel.css';
       tag.textContent = PANEL_CSS;
-      ctx.effect(() => {
+      lifecycle(() => {
         document.head.appendChild(tag);
         return () => tag.remove();
       });
@@ -442,7 +455,7 @@ window.__ModuleLoader__.load({
 
         const locale = ctx.get?.('locale') ?? ctx.locale;
         if (typeof locale?.register === 'function') {
-          ctx.effect(() => locale.register(NS, { en: EN, zh: ZH }), 'balance: dictionaries');
+          lifecycle(() => locale.register(NS, { en: EN, zh: ZH }));
         }
         const fallback = (key, args={}) => String(ZH[key] ?? key).replace(/\{(\w+)\}/g, (_,name)=>String(args[name]??''));
         const translate = locale?.bind ? locale.bind(NS) : fallback;
@@ -662,7 +675,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.16.3';
+    const CLIENT_VERSION = 'v1.16.4';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -890,7 +903,14 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
-        createBalanceModule(require).apply(ctx);
+        // The balance half is additive: if it cannot initialise, the memory
+        // half must still register (a boot-blocking plugin is worse than a
+        // missing badge).
+        try {
+          createBalanceModule(require).apply(ctx)
+        } catch (error) {
+          console.warn?.('[context-anchor] balance half skipped', error)
+        }
         /** Segmented option that answers the pointer like the shipped menus. */
         function ChoiceButton(props) {
           const [hovered, hoverProps] = useHover();
