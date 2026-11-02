@@ -405,22 +405,40 @@ window.__ModuleLoader__.load({
     /** Unplaced portal panel: hidden but laid out so the clamp measures real dimensions. */
     const MEASURE_STYLE = { visibility: 'hidden', left: 0, top: 0 };
 
-    /** Per-turn usage row: tokens priced with the rolling 24h effective rate. */
-    function makeTurnCostRow(h, React, { panelStoreRef, formatCost }) {
+    /** Match the completed Turn by durable message id; never reuse latest-turn data. */
+    function turnUsageForMessage(snapshot, messageId) {
+      if (!messageId || !snapshot?.nodes?.values) return null;
+      for (const node of snapshot.nodes.values()) {
+        if (node?.kind === 'turn-tail' && node.data?.closing?.finalNode?.messageId === messageId) {
+          const usage = node.data.tokenUsage;
+          return Number.isFinite(usage?.totalTokens) && usage.totalTokens > 0
+            ? { turn: node.data.turn, tokens: usage.totalTokens } : null;
+        }
+      }
+      return null;
+    }
+
+    function makeTurnCostRow(h, React, { panelStoreRef, formatCost, details }) {
       return function TurnCostRow(props) {
         const store = panelStoreRef();
         const [panel, setPanel] = React.useState(store.get());
         React.useEffect(() => store.subscribe(() => setPanel(store.get())), []);
-        const turns = props.useProjection?.('contextAnchorTurns');
-        const rate = panel?.status === 'ready' && Number(panel.window?.tokens) > 0 ? panel.window.cost / panel.window.tokens : null;
-        const closed = Array.isArray(turns?.closed) ? turns.closed : [];
-        const row = closed.at(-1);
-        if (!row || row.tokens <= 0 || rate === null) return null;
-        const cost = row.tokens * rate;
-        const perMillion = rate * 1_000_000;
-        return h('div', {
-          style: { fontSize: 11, lineHeight: '15px', color: 'var(--dsw-alias-label-tertiary)', margin: '2px 0 4px', fontVariantNumeric: 'tabular-nums' },
-        }, `本轮 ${row.tokens.toLocaleString()} tokens · 约 ${formatCost(cost, panel.currency ?? 'CNY')} · 折合 ${formatCost(perMillion, panel.currency ?? 'CNY')}/M tokens（按近24小时均价估算）`);
+        const row = typeof props.useChat === 'function'
+          ? props.useChat(snapshot => turnUsageForMessage(snapshot, props.messageId)) : null;
+        React.useEffect(() => { if (row) store.ensure(); }, [props.messageId, Boolean(row)]);
+        if (!row) return null;
+        const rate = panel?.status === 'ready' && Number(panel.window?.tokens) > 0
+          && Number.isFinite(panel.window.cost) ? panel.window.cost / panel.window.tokens : null;
+        const cost = rate === null ? null : row.tokens * rate;
+        const currency = panel?.currency ?? 'CNY';
+        return h('button', {
+          type: 'button', 'aria-haspopup': 'dialog', title: '查看本轮消耗与每百万 token 费用',
+          style: { font: 'inherit', fontSize: 'var(--dsh-content-font-size-secondary, 13px)', lineHeight: '20px',
+            color: 'var(--dsw-alias-label-tertiary)', background: 'transparent', border: 0,
+            borderRadius: 'var(--dsw-radius-sm)', padding: '0 6px', cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' },
+          onClick: () => { details.show({ ...row, cost, rate, currency }); if (rate === null) store.ensure(); },
+        }, cost === null ? '消耗 —' : `约 ${formatCost(cost, currency)}`);
       };
     }
 
@@ -461,6 +479,32 @@ window.__ModuleLoader__.load({
         const translate = locale?.bind ? locale.bind(NS) : fallback;
         const balanceStore = createStore(readBalance);
         const panelStore = createPanelStore(readPanel);
+        const details = { value: null, listeners: new Set(), show(value) {
+          details.value = value; for (const listener of details.listeners) listener(value);
+        } };
+        function TurnCostPanel() {
+          const [value, setValue] = React.useState(details.value);
+          React.useEffect(() => { details.listeners.add(setValue); return () => details.listeners.delete(setValue); }, []);
+          React.useEffect(() => {
+            if (!value) return;
+            const target = typeof globalThis.addEventListener === 'function' ? globalThis : null;
+            const close = event => { if (event.key === 'Escape') details.show(null); };
+            target?.addEventListener('keydown', close);
+            return () => target?.removeEventListener('keydown', close);
+          }, [value]);
+          if (!value) return null;
+          const item = (label, text) => h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 24, marginTop: 8 } }, h('span', null, label), h('span', null, text));
+          return h('div', { onClick: () => details.show(null), style: { position: 'fixed', inset: 0, zIndex: 1101, pointerEvents: 'auto' } },
+            h('div', { role: 'dialog', 'aria-label': '本轮消耗', onClick: event => event.stopPropagation(),
+              style: { position: 'fixed', bottom: 100, left: 'max(12px, calc(50vw - 180px))', width: 360, maxWidth: 'calc(100vw - 24px)',
+                padding: 16, boxSizing: 'border-box', fontSize: 12, lineHeight: '18px', borderRadius: 'var(--dsw-radius-lg)',
+                color: 'var(--dsw-alias-label-secondary)', background: 'var(--dsw-specific-menu)', boxShadow: 'var(--dsw-elevation-prominent)' } },
+              h('div', { style: { display: 'flex', justifyContent: 'space-between' } }, '本轮消耗', h('button', { type: 'button', onClick: () => details.show(null), style: { font: 'inherit', color: 'inherit', background: 'transparent', border: 0, cursor: 'pointer' } }, '关闭')),
+              item('本轮用量', `${value.tokens.toLocaleString()} tokens`),
+              item('估算消耗', value.cost === null ? '暂无账单均价' : formatCost(value.cost, value.currency)),
+              item('每百万 token', value.rate === null ? '—' : `${formatCost(value.rate * 1_000_000, value.currency)}/M`),
+              h('div', { style: { marginTop: 12, fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' } }, '用量取自 DSH 该轮统计；金额按最近 24 小时账单均价折算，非本轮实际扣款。')));
+        }
 
 
         let opened = false;
@@ -655,7 +699,8 @@ window.__ModuleLoader__.load({
         // per slot, so shipping several entries into the same slot from two
         // separate injects silently drops all but the first.
         mount('shell.overlay', { id: 'balance-panel', order: 91 }, BalancePanel)
-        mount('conversation.chat.turnTail', { id: 'turn-cost', order: 5 }, makeTurnCostRow(h, React, { panelStoreRef: () => panelStore, formatCost }))
+        mount('shell.overlay', { id: 'turn-cost-panel', order: 92 }, TurnCostPanel)
+        mount('conversation.chat.assistant-actions', { id: 'turn-cost', order: 90 }, makeTurnCostRow(h, React, { panelStoreRef: () => panelStore, formatCost, details }))
         mount('conversation.composer.dock', { id: 'balance', order: 2, locale: NS }, BalanceReading)
       },
     };
@@ -669,7 +714,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.16.6';
+    const CLIENT_VERSION = 'v1.17.0';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {

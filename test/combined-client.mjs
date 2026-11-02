@@ -65,4 +65,22 @@ for (const entry of entries) {
   hooks = []
   assert.doesNotThrow(() => entry.component(props), `${entry.options.id} renders without throwing`)
 }
-console.log('PASS one client module registers every entry and all components render without throwing')
+const action = entries.find(entry => entry.options.id === 'turn-cost')
+assert.equal(action.options.name, 'conversation.chat.assistant-actions')
+assert.ok(!entries.some(entry => entry.options.name === 'conversation.chat.turnTail'))
+const snapshot = { nodes: new Map([
+  ['one', { kind: 'turn-tail', data: { turn: 1, closing: { finalNode: { messageId: 'first' } }, tokenUsage: { totalTokens: 100 } } }],
+  ['two', { kind: 'turn-tail', data: { turn: 2, closing: { finalNode: { messageId: 'second' } }, tokenUsage: { totalTokens: 200 } } }],
+]) }
+cursor = 0; hooks = []
+const button = action.component({ messageId: 'first', useChat: selector => selector(snapshot) })
+assert.equal(button.type, 'button')
+assert.equal(button.props['aria-haspopup'], 'dialog')
+button.props.onClick()
+cursor = 0; hooks = []
+const details = entries.find(entry => entry.options.id === 'turn-cost-panel').component()
+assert.ok(JSON.stringify(details).includes('100 tokens'), 'clicked historical turn keeps its own usage')
+assert.ok(!JSON.stringify(details).includes('200 tokens'), 'latest turn is not substituted')
+cursor = 0; hooks = []
+assert.equal(action.component({ messageId: 'missing', useChat: selector => selector(snapshot) }), null)
+console.log('PASS compact same-row cost action opens matching turn details; all entries render without throwing')
