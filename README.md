@@ -1,4 +1,10 @@
-# Context Anchor · 上下文锚点
+# 余额与本地缓存 · Context Anchor
+
+## v1.16 合并包
+
+现在只需安装 `@local/dsh-context-anchor` 一个插件，即可获得余额、最近 **24 小时**消耗和本地缓存/记忆功能。输入框下方保留余额、本地缓存两个入口，余额详情使用 `shell.overlay`，不依赖 react-dom。
+
+升级时停用旧的 `@local/dsh-balance`，避免重复入口与路由。现有记忆、设置路径不变；余额继续使用凭据库中的 `COLINK_PANEL_EMAIL` 和 `COLINK_PANEL_PASSWORD`，新用户需自行配置，安装包不含账号密码。宿主加载变更后需重启 DSH。
 
 给 DeepSeek Harness 装一块「长时记忆」：每一步都从**完整会话日志**重建注意力锚点，并用本地检索内核在被压缩掉的历史里找回原文——超长会话不再失忆。
 

@@ -1,12 +1,12 @@
 {
   "name": "@local/dsh-context-anchor",
-  "version": "1.15.1",
+  "version": "1.16.0",
   "private": true,
   "type": "module",
-  "description": "每一步都从完整会话日志重建上下文锚点，并注册带倒排索引的全量历史检索内核，让超长会话在压缩之后仍保持注意力与记忆。",
+  "description": "余额与本地缓存：最近24小时消耗、会话记忆与全量日志检索。",
   "main": "index.js",
   "scripts": {
-    "test": "node --check index.js && node --check client.js && node smoke.mjs && node probe-client.mjs && node test/cut-region.mjs && node test/highlight.mjs && node test/render-smoke.mjs && node test/client-state.mjs && node test/token-budget.mjs && node test/memory.mjs && node test/truncation.mjs && node test/carried-memory.mjs && node test/supersession.mjs && node test/auto-recall.mjs && node test/rule-source.mjs && node test/settings-route.mjs"
+    "test": "node --check index.js && node --check client.js && node smoke.mjs && node probe-client.mjs && node test/cut-region.mjs && node test/highlight.mjs && node test/render-smoke.mjs && node test/client-state.mjs && node test/token-budget.mjs && node test/memory.mjs && node test/truncation.mjs && node test/carried-memory.mjs && node test/supersession.mjs && node test/auto-recall.mjs && node test/rule-source.mjs && node test/settings-route.mjs && node test/balance.mjs && node test/combined-client.mjs"
   },
   "exports": {
     ".": "./index.js",
@@ -21,7 +21,8 @@
     "cordis.patch.yml",
     "README.md",
     "locale/*.json",
-    "icon.svg"
+    "icon.svg",
+    "balance-host.js"
   ],
   "dsh": {
     "bundle": {

@@ -17,6 +17,607 @@
 window.__ModuleLoader__.load({
   id: '@local/dsh-context-anchor',
   factory(require) {
+    function createBalanceModule(require) {
+    const React = require('react');
+
+    const h = React.createElement;
+
+    const NS = 'balance';
+    const CACHE_MS = 60_000;
+    /** A failed read retries sooner than a successful one refreshes. */
+    const RETRY_MS = 5_000;
+    /** The loopback routes the Host half registers for the API site account. */
+    const BALANCE_ROUTE = '/plugins/balance/colink';
+    const PANEL_ROUTE = '/plugins/balance/colink/panel';
+    /**
+     * Payload shape this half understands. A Host half still running an older
+     * build answers without it, and its figures cover a different window — so
+     * the panel refuses to draw them rather than mislabeling seven days as one.
+     */
+    const PANEL_VERSION = 2;
+    /** The API site that owns the account, usage and key pages. */
+    const SITE_URL = 'https://www.colink.site';
+
+    /**
+     * Plugin stylesheet for the dock pill and its dialog, following the shipped
+     * composer stat-pill metrics; injected once per page.
+     */
+    const PANEL_CSS = [
+      '.dshb-anchor{min-width:0;font-size:calc(var(--dsh-content-font-size-secondary,13px) - 1px);line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px));display:inline-flex}',
+      '.dshb-pill{box-sizing:border-box;border-radius:var(--dsw-radius-sm);max-width:100%;color:var(--dsw-alias-label-tertiary);font:inherit;font-variant-numeric:tabular-nums;line-height:inherit;white-space:nowrap;background:0 0;border:none;align-items:center;gap:6px;padding:1px 8px;display:inline-flex}',
+      '.dshb-pill svg{flex:none;width:14px;height:14px}',
+      'button.dshb-pill{cursor:pointer}',
+      'button.dshb-pill:hover,button.dshb-pill[aria-expanded="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}',
+      '.dshb-panel{z-index:1100;box-sizing:border-box;border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);width:max-content;min-width:min(320px,100vw - 24px);max-width:min(560px,100vw - 24px);max-height:calc(100vh - 24px);overflow:auto;backdrop-filter:var(--dsw-menu-backdrop-filter);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-secondary);cursor:default;border:0;padding:16px;font-size:12px;line-height:18px;position:fixed}',
+      '.dshb-title{color:var(--dsw-alias-label-primary);justify-content:space-between;gap:16px;margin-bottom:8px;font-weight:500;display:flex}',
+      '.dshb-titleRule{border-top:.5px solid var(--dsw-alias-border-l2);margin-bottom:10px}',
+      '.dshb-titleValue{font-variant-numeric:tabular-nums}',
+      '.dshb-sectionTitle{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;margin:12px 0 6px;font-weight:500}',
+      '.dshb-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}',
+      '.dshb-table th{text-align:left;color:var(--dsw-alias-label-tertiary);font-weight:400;padding:2px 6px 2px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}',
+      '.dshb-table td{padding:3px 6px 3px 0;vertical-align:top;white-space:nowrap}',
+      '.dshb-rows{display:grid;grid-template-columns:auto 1fr;gap:4px 24px;font-variant-numeric:tabular-nums}',
+      '.dshb-key{color:var(--dsw-alias-label-tertiary)}',
+    ].join('');
+
+
+    const EN = {
+      label: 'Balance',
+      pending: '…',
+      dash: '—',
+      'title.loading': 'Reading the API site account balance…',
+      'title.account': 'API site account: {account}',
+      'title.available': 'Available balance: {amount}',
+      'title.frozen': 'Frozen: {amount}',
+      'title.recharged': 'Lifetime top-up: {amount}',
+      'title.failed': 'The API site account balance could not be read; it will retry automatically.',
+      'title.missing': 'The API site reading service is not running in this app instance.',
+      'panel.title': 'API site balance',
+      'panel.loading': 'Loading…',
+      'panel.refreshing': 'Updating…',
+      'panel.failed': 'Could not read the site account; try again later.',
+      'panel.stale': 'The reading service in this app instance is out of date. Restart the app to load the current build.',
+      'panel.noData': 'No usage in this period.',
+      'panel.available': 'Available',
+      'panel.frozenRow': 'Frozen',
+      'panel.rechargedRow': 'Lifetime top-up',
+      'panel.spentRow': 'Spent (24h)',
+      'panel.daily': 'Spend by hour (last 24h)',
+      'panel.windowCost': '24h total: {amount}',
+      'panel.models': 'By model (last 24h)',
+      'panel.keys': 'API keys on this account',
+      'panel.records': 'Recent requests',
+      'panel.thTime': 'Time',
+      'panel.thModel': 'Model',
+      'panel.thTokens': 'Tokens',
+      'panel.thCost': 'Cost',
+      'panel.thKey': 'Key',
+      'panel.thGroup': 'Group',
+      'panel.thKeyStatus': 'Status',
+      'panel.accountRow': 'Account',
+      'panel.site': 'Open the API site dashboard',
+    };
+
+    const ZH = {
+      label: '余额',
+      pending: '…',
+      dash: '—',
+      'title.loading': '正在读取 API 站点账户余额…',
+      'title.account': 'API 站点账户：{account}',
+      'title.available': '可用余额：{amount}',
+      'title.frozen': '冻结：{amount}',
+      'title.recharged': '累计充值：{amount}',
+      'title.failed': '暂时无法读取 API 站点账户余额，稍后会自动重试。',
+      'title.missing': '本应用实例未运行 API 站点余额读取服务。',
+      'panel.title': 'API 站点余额',
+      'panel.loading': '加载中…',
+      'panel.refreshing': '正在更新中…',
+      'panel.failed': '站点账户读取失败，稍后重试。',
+      'panel.stale': '本应用实例里的读取服务还是旧版本，重启应用后才会按新的时间口径显示。',
+      'panel.noData': '该时段暂无用量。',
+      'panel.available': '可用余额',
+      'panel.frozenRow': '冻结',
+      'panel.rechargedRow': '累计充值',
+      'panel.spentRow': '近 24 小时消费',
+      'panel.daily': '近 24 小时逐时消费',
+      'panel.windowCost': '24 小时合计：{amount}',
+      'panel.models': '模型用量（近 24 小时）',
+      'panel.keys': '本账户的 API 密钥',
+      'panel.records': '最近请求',
+      'panel.thTime': '时间',
+      'panel.thModel': '模型',
+      'panel.thTokens': 'Tokens',
+      'panel.thCost': '消费',
+      'panel.thKey': '密钥',
+      'panel.thGroup': '分组',
+      'panel.thKeyStatus': '状态',
+      'panel.accountRow': '账户',
+      'panel.site': '打开 API 站点控制台',
+    };
+
+    /** Wallet glyph in the reading's own color. */
+    const ICON = h('svg', {
+      viewBox: '0 0 14 14', width: 14, height: 14, 'aria-hidden': true,
+      style: { display: 'block', flex: 'none' },
+    }, [
+      h('ellipse', { key: 'top', cx: 7, cy: 3.9, rx: 4.3, ry: 1.7, fill: 'none', stroke: 'currentColor', strokeWidth: 1.2 }),
+      h('path', { key: 'wall', d: 'M2.7 3.9v5.5c0 .94 1.92 1.7 4.3 1.7s4.3-.76 4.3-1.7V3.9', fill: 'none', stroke: 'currentColor', strokeWidth: 1.2 }),
+      h('path', { key: 'band', d: 'M2.7 6.6c0 .94 1.92 1.7 4.3 1.7s4.3-.76 4.3-1.7', fill: 'none', stroke: 'currentColor', strokeWidth: 1.2 }),
+    ]);
+
+    function currencySymbol(currency) {
+      if (currency === 'CNY') return '¥';
+      if (currency === 'USD') return '$';
+      return `${currency} `;
+    }
+
+    /**
+     * Site-style amount: two decimals, grouped digits, `<¥0.01` under a cent.
+     * @param amount - decimal amount as the site reports it.
+     * @param currency - currency code, CNY unless stated.
+     */
+    function formatAmount(amount, currency) {
+      const symbol = currencySymbol(currency ?? 'CNY');
+      if (!Number.isFinite(amount)) return `${symbol}0.00`;
+      const magnitude = Math.abs(amount);
+      if (magnitude > 0 && magnitude < 0.01) return `${amount < 0 ? '-' : ''}<${symbol}0.01`;
+      const fixed = magnitude.toFixed(2);
+      const [whole, fraction] = fixed.split('.');
+      return `${amount < 0 ? '-' : ''}${symbol}${Number(whole).toLocaleString('en-US')}.${fraction}`;
+    }
+
+    /** Compact token count: 12.3k / 1.25M. */
+    function formatTokens(count) {
+      if (!Number.isFinite(count) || count <= 0) return '0';
+      if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count >= 10_000_000 ? 0 : 1)}M`;
+      if (count >= 1_000) return `${(count / 1_000).toFixed(count >= 100_000 ? 0 : 1)}k`;
+      return String(Math.round(count));
+    }
+
+    /** Cost with enough precision for sub-cent relay prices. */
+    function formatCost(amount, currency) {
+      const value = Number(amount);
+      if (!Number.isFinite(value)) return formatAmount(0, currency);
+      if (Math.abs(value) > 0 && Math.abs(value) < 0.01) return `${value < 0 ? '-' : ''}<${currencySymbol(currency ?? 'CNY')}0.01`;
+      return formatAmount(value, currency);
+    }
+
+    /** Short time label for a record's ISO stamp: today shows only the clock. */
+    function formatRecordTime(iso) {
+      const at = new Date(iso);
+      if (Number.isNaN(at.getTime())) return '';
+      const now = new Date();
+      const sameDay = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+      const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+      return sameDay ? clock : `${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')} ${clock}`;
+    }
+
+    /** The compact reading, fetched through the Host half's loopback route. */
+    async function readBalance() {
+      let res;
+      try {
+        res = await window.fetch(BALANCE_ROUTE, { cache: 'no-store' });
+      } catch (error) {
+        console.error('[balance] reading route unreachable', error);
+        return { status: 'failed' };
+      }
+      if (!res.ok) {
+        console.error('[balance] reading route answered HTTP', res.status);
+        return { status: res.status === 404 ? 'missing' : 'failed' };
+      }
+      let json;
+      try {
+        json = await res.json();
+      } catch (_error) {
+        return { status: 'failed' };
+      }
+      if (json === null || typeof json !== 'object') return { status: 'failed' };
+      if (json.status !== 'ready') return { status: 'failed' };
+      const balance = Number(json.balance);
+      if (!Number.isFinite(balance)) return { status: 'failed' };
+      const frozen = Number(json.frozen ?? 0);
+      const recharged = Number(json.recharged ?? 0);
+      return {
+        status: 'ready',
+        balance,
+        frozen: Number.isFinite(frozen) ? frozen : 0,
+        recharged: Number.isFinite(recharged) ? recharged : 0,
+        currency: typeof json.currency === 'string' && json.currency !== '' ? json.currency : 'CNY',
+        account: typeof json.account === 'string' ? json.account : '',
+      };
+    }
+
+    /** The panel reading, fetched through the Host half's loopback route. */
+    async function readPanel() {
+      let res;
+      try {
+        res = await window.fetch(PANEL_ROUTE, { cache: 'no-store' });
+      } catch (error) {
+        console.error('[balance] panel route unreachable', error);
+        return { status: 'failed' };
+      }
+      if (!res.ok) {
+        console.error('[balance] panel route answered HTTP', res.status);
+        return { status: 'failed' };
+      }
+      try {
+        const json = await res.json();
+        if (json === null || typeof json !== 'object' || json.status !== 'ready') return { status: 'failed' };
+        return json.version === PANEL_VERSION ? json : { status: 'stale' };
+      } catch (_error) {
+        return { status: 'failed' };
+      }
+    }
+
+    /** One shared balance reading with a stale-after cache and a single in-flight request. */
+    function createStore(read) {
+      let state = { status: 'idle' };
+      let readAt = 0;
+      let inFlight = null;
+      const listeners = new Set();
+      const publish = (next) => {
+        state = next;
+        for (const listener of listeners) listener();
+      };
+      return {
+        get: () => state,
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        ensure(force = false) {
+          if (inFlight !== null) return inFlight;
+          const ttl = state.status === 'failed' || state.status === 'missing' ? RETRY_MS : CACHE_MS;
+          const fresh = state.status !== 'idle' && Date.now() - readAt < ttl;
+          if (!force && fresh) return Promise.resolve();
+          inFlight = (async () => {
+            if (state.status === 'idle' || state.status === 'failed') publish({ status: 'loading' });
+            try {
+              publish(await read());
+            } catch (_error) {
+              publish({ status: 'failed' });
+            }
+            readAt = Date.now();
+            inFlight = null;
+          })();
+          return inFlight;
+        },
+      };
+    }
+
+    /** Where the last successful balance-details reading is kept on this device. */
+    const PANEL_CACHE_KEY = 'dsh.balance.panel.v3';
+    /** A reading older than this is no longer shown while the next one loads. */
+    const PANEL_CACHE_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+    /** Opening the panel re-reads in the background when the last read is this old. */
+    const PANEL_REFRESH_MS = 15_000;
+
+    /** This page's persistent storage, or null when the browser withholds it. */
+    function localStore() {
+      try {
+        return window.localStorage ?? null;
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    /** The last balance-details reading saved on this device, when still worth showing. */
+    function readPanelCache() {
+      const store = localStore();
+      if (store === null) return null;
+      try {
+        const raw = store.getItem(PANEL_CACHE_KEY);
+        if (typeof raw !== 'string' || raw === '') return null;
+        const saved = JSON.parse(raw);
+        const readAt = Number(saved?.readAt);
+        const data = saved?.data;
+        if (!Number.isFinite(readAt) || Date.now() - readAt > PANEL_CACHE_KEEP_MS) return null;
+        if (data === null || typeof data !== 'object' || data.status !== 'ready') return null;
+        return { data, readAt };
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    /** Keep the latest balance-details reading on this device for the next open. */
+    function writePanelCache(data, readAt) {
+      const store = localStore();
+      if (store === null) return;
+      try {
+        store.setItem(PANEL_CACHE_KEY, JSON.stringify({ data, readAt }));
+      } catch (_error) {
+        // Private mode or a full quota: the reading simply stays in memory.
+      }
+    }
+
+    /**
+     * Balance details cached on this device: opening the panel paints the last
+     * reading at once and refreshes it in the background, so the panel never
+     * waits on the network. A failed refresh keeps the cached numbers.
+     */
+    function createPanelStore(read) {
+      const saved = readPanelCache();
+      let state = saved === null ? null : saved.data;
+      let readAt = saved === null ? 0 : saved.readAt;
+      let failedAt = 0;
+      let refreshing = false;
+      let inFlight = null;
+      const listeners = new Set();
+      const notify = () => {
+        for (const listener of listeners) listener();
+      };
+      const publish = (next) => {
+        state = next;
+        notify();
+      };
+      return {
+        get: () => state,
+        isRefreshing: () => refreshing,
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        ensure(force = false) {
+          if (inFlight !== null) return inFlight;
+          if (!force) {
+            if (state !== null && Date.now() - readAt < PANEL_REFRESH_MS) return Promise.resolve();
+            if (state === null && failedAt !== 0 && Date.now() - failedAt < RETRY_MS) return Promise.resolve();
+          }
+          refreshing = true;
+          notify();
+          inFlight = (async () => {
+            try {
+              const next = await read();
+              if (next !== null && typeof next === 'object' && next.status === 'ready') {
+                readAt = Date.now();
+                failedAt = 0;
+                writePanelCache(next, readAt);
+                publish(next);
+              } else if (state === null) {
+                failedAt = Date.now();
+                publish(next ?? { status: 'failed' });
+              } else {
+                failedAt = Date.now();
+              }
+            } catch (_error) {
+              if (state === null) publish({ status: 'failed' });
+              else failedAt = Date.now();
+            } finally {
+              inFlight = null;
+              if (refreshing) {
+                refreshing = false;
+                notify();
+              }
+            }
+          })();
+          return inFlight;
+        },
+      };
+    }
+
+    /** Bar-chart palette drawn from the app's brand tones. */
+    const BAR_COLOR = 'var(--dsw-alias-brand-primary, #4d6bfe)';
+    const BAR_TRACK = 'var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.18))';
+    /** Unplaced portal panel: hidden but laid out so the clamp measures real dimensions. */
+    const MEASURE_STYLE = { visibility: 'hidden', left: 0, top: 0 };
+
+    /** The dock reading: label plus the API site account balance. */
+    return {
+      inject: ['slots', 'locale'],
+      apply(ctx) {
+
+    if (typeof document !== 'undefined' && typeof document.querySelector === 'function' && document.querySelector('style[data-plugin-css="@local/dsh-balance/panel.css"]') === null) {
+      const tag = document.createElement('style');
+      tag.dataset.plugin = '@local/dsh-balance';
+      tag.dataset.pluginCss = '@local/dsh-balance/panel.css';
+      tag.textContent = PANEL_CSS;
+      ctx.effect(() => {
+        document.head.appendChild(tag);
+        return () => tag.remove();
+      });
+    }
+
+        const locale = ctx.get?.('locale') ?? ctx.locale;
+        if (typeof locale?.register === 'function') {
+          ctx.effect(() => locale.register(NS, { en: EN, zh: ZH }), 'balance: dictionaries');
+        }
+        const fallback = (key, args={}) => String(ZH[key] ?? key).replace(/\{(\w+)\}/g, (_,name)=>String(args[name]??''));
+        const translate = locale?.bind ? locale.bind(NS) : fallback;
+        const balanceStore = createStore(readBalance);
+        const panelStore = createPanelStore(readPanel);
+
+
+        let opened = false;
+        const listeners = new Set();
+        const setOpen = value => { opened=value; for(const fn of listeners) fn(value); };
+        function useStore(store) {
+          const [state, update] = React.useState(store.get());
+          React.useEffect(() => store.subscribe(() => update(store.get())), []);
+          return state;
+        }
+        function useOpen() {
+          const [value, update] = React.useState(opened);
+          React.useEffect(() => { listeners.add(update); return () => listeners.delete(update); }, []);
+          return value;
+        }
+        function BalanceReading() {
+          const state = useStore(balanceStore);
+          const open = useOpen();
+          React.useEffect(() => {
+            balanceStore.ensure();
+            const timer=setInterval(() => balanceStore.ensure(),30000);
+            return () => { clearInterval(timer); setOpen(false); };
+          }, []);
+          const t=translate;
+          return h('button', { type:'button', className:'dshb-pill', 'aria-expanded':open,
+            onClick:()=>setOpen(!opened) }, ICON, '余额 ', state.status==='ready' ? formatAmount(state.balance,state.currency) : '—');
+        }
+        function BalancePanel() {
+          const open=useOpen();
+          const data=useStore(panelStore);
+          React.useEffect(() => {
+            if(!open) return;
+            panelStore.ensure();
+            const timer=setInterval(()=>panelStore.ensure(),30000);
+            const target=typeof globalThis.addEventListener==='function' ? globalThis : null;
+            const key=e=>{if(e.key==='Escape')setOpen(false)};
+            target?.addEventListener('keydown',key);
+            return()=>{clearInterval(timer);target?.removeEventListener('keydown',key)};
+          },[open]);
+          if(!open)return null;
+          const t=translate;
+          return h('div', { style:{position:'fixed',inset:0,zIndex:1100,pointerEvents:'auto'},onClick:()=>setOpen(false)},
+            h('div',{className:'dshb-panel',role:'dialog','aria-label':t('panel.title'),
+              onClick:e=>e.stopPropagation(),style:{left:'max(12px, calc(50vw - 280px))',bottom:80,width:560,maxWidth:'calc(100vw - 24px)',maxHeight:'calc(100vh - 104px)'}},
+              h('div',{className:'dshb-title'},t('panel.title'),h('button',{type:'button',onClick:()=>setOpen(false)},'关闭')),
+              data?.status==='ready' ? h('div',null,
+                h(SummaryRows,{data,t}),h(HourlyChart,{hourly:data.hourly,window:data.window,currency:data.currency,t}),
+                h(ModelBreakdown,{models:data.models,currency:data.currency,t}),h(KeyTable,{keys:data.keys,t}),h(RecordTable,{records:data.records,currency:data.currency,t}))
+              : h('div',null,data===null?t('panel.loading'):t('panel.failed'))));
+        }
+        /** The site account's own figures: available, frozen, lifetime top-up, account name. */
+        function SummaryRows({ data, t }) {
+          const currency = data.currency ?? 'CNY';
+          const rows = [];
+          if (typeof data.account === 'string' && data.account !== '') {
+            rows.push(h('span', { key: 'ak', className: 'dshb-key' }, t('panel.accountRow')));
+            rows.push(h('span', { key: 'av' }, data.account));
+          }
+          rows.push(h('span', { key: 'k1', className: 'dshb-key' }, t('panel.available')));
+          rows.push(h('span', { key: 'v1' }, formatAmount(Number(data.balance ?? 0), currency)));
+          if (Number(data.frozen ?? 0) > 0) {
+            rows.push(h('span', { key: 'k2', className: 'dshb-key' }, t('panel.frozenRow')));
+            rows.push(h('span', { key: 'v2' }, formatAmount(Number(data.frozen), currency)));
+          }
+          if (Number(data.recharged ?? 0) > 0) {
+            rows.push(h('span', { key: 'k3', className: 'dshb-key' }, t('panel.rechargedRow')));
+            rows.push(h('span', { key: 'v3' }, formatAmount(Number(data.recharged), currency)));
+          }
+          if (Number.isFinite(Number(data.window?.cost))) {
+            rows.push(h('span', { key: 'k4', className: 'dshb-key' }, t('panel.spentRow')));
+            rows.push(h('span', { key: 'v4', style: { fontVariantNumeric: 'tabular-nums' } }, formatCost(Number(data.window.cost), currency)));
+          }
+          return h('div', { className: 'dshb-rows' },
+            rows,
+            h('span', { key: 'lk', className: 'dshb-key' }, ''),
+            h('a', {
+              key: 'lk2',
+              href: SITE_URL,
+              target: '_blank',
+              rel: 'noreferrer',
+              style: { color: BAR_COLOR, textDecoration: 'none' },
+            }, t('panel.site')));
+        }
+
+        /** Hour-of-day label for an hourly bucket: `23:00`. */
+        function formatHourTick(at) {
+          const date = new Date(Number(at));
+          if (Number.isNaN(date.getTime())) return '';
+          return `${String(date.getHours()).padStart(2, '0')}:00`;
+        }
+
+        /**
+         * Twenty-four hourly bars covering the rolling window, oldest first.
+         * Each bar's tooltip carries the hour, cost and request count.
+         */
+        function HourlyChart({ hourly, window: windowTotals, currency, t }) {
+          const hours = Array.isArray(hourly) ? hourly.slice(-24) : [];
+          if (hours.length === 0) return null;
+          const width = 520;
+          const height = 72;
+          const max = Math.max(...hours.map((hour) => hour.cost), 0.000001);
+          const barArea = width - 8;
+          const slot = barArea / Math.max(hours.length, 1);
+          const barWidth = Math.max(3, Math.min(16, slot - 4));
+          const total = Number.isFinite(Number(windowTotals?.cost))
+            ? Number(windowTotals.cost)
+            : hours.reduce((sum, hour) => sum + hour.cost, 0);
+          const peak = hours.reduce((best, hour) => (hour.cost > best.cost ? hour : best), hours[0]);
+          return h('div', null,
+            h('div', { className: 'dshb-sectionTitle', style: { display: 'flex', justifyContent: 'space-between', gap: 12 } },
+              h('span', null, t('panel.daily')),
+              h('span', { style: { fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } }, t('panel.windowCost', { amount: formatCost(total, currency) }))),
+            h('svg', { viewBox: `0 0 ${width} ${height}`, width, height, role: 'img' },
+              hours.map((hour, index) => {
+                const barHeight = Math.max(hour.cost > 0 ? 2 : 1, Math.round((hour.cost / max) * (height - 24)));
+                const x = 4 + index * slot + (slot - barWidth) / 2;
+                const y = height - 16 - barHeight;
+                const label = `${formatHourTick(hour.at)} · ${formatCost(hour.cost, currency)} · ${hour.requests} req`;
+                const labelled = index % 6 === 0;
+                return h('g', { key: hour.at },
+                  h('rect', { x, y, width: barWidth, height: barHeight, rx: 2, fill: hour.cost > 0 ? BAR_COLOR : BAR_TRACK, opacity: hour === peak ? 1 : 0.85 },
+                    h('title', null, label)),
+                  labelled
+                    ? h('text', { x: x + barWidth / 2, y: height - 4, textAnchor: 'middle', fontSize: 8.5, fill: 'var(--dsw-alias-label-tertiary)' }, formatHourTick(hour.at))
+                    : null);
+              })));
+        }
+
+        /** Per-model spend rows with a proportional bar behind each name. */
+        function ModelBreakdown({ models, currency, t }) {
+          const rows = Array.isArray(models) ? models.filter((model) => model.cost > 0).slice(0, 6) : [];
+          if (rows.length === 0) return null;
+          const max = Math.max(...rows.map((row) => row.cost));
+          return h('div', null,
+            h('div', { className: 'dshb-sectionTitle' }, t('panel.models')),
+            rows.map((row) => h('div', { key: row.model, style: { display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '1px 0' } },
+              h('span', { key: 'n', style: { position: 'relative', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', padding: '1px 4px', borderRadius: 4 } },
+                h('span', { key: 'bar', 'aria-hidden': true, style: { position: 'absolute', inset: 0, width: `${Math.max(4, Math.round((row.cost / max) * 100))}%`, background: BAR_TRACK, borderRadius: 4 } }),
+                h('span', { key: 'name', style: { position: 'relative' } }, row.model)),
+              h('span', { key: 'c', style: { fontVariantNumeric: 'tabular-nums', color: 'var(--dsw-alias-label-tertiary)' } }, formatCost(row.cost, currency)))));
+        }
+
+        /** The account's API keys exactly as the site lists them: name, group, status. */
+        function KeyTable({ keys, t }) {
+          const rows = Array.isArray(keys) ? keys.slice(0, 8) : [];
+          if (rows.length === 0) return null;
+          return h('div', null,
+            h('div', { className: 'dshb-sectionTitle' }, t('panel.keys')),
+            h('table', { className: 'dshb-table' },
+              h('thead', null, h('tr', null,
+                h('th', { key: 'h1' }, t('panel.thKey')),
+                h('th', { key: 'h2' }, t('panel.thGroup')),
+                h('th', { key: 'h3', style: { textAlign: 'right' } }, t('panel.thKeyStatus')))),
+              h('tbody', null, rows.map((row, index) => h('tr', { key: `${row.name}-${index}` },
+                h('td', { key: 'c1' }, row.name),
+                h('td', { key: 'c2', style: { maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' } }, row.group),
+                h('td', { key: 'c3', style: { textAlign: 'right', color: 'var(--dsw-alias-label-tertiary)' } }, row.status))))));
+        }
+
+        /** The most recent requests: time, model, tokens and the charged cost. */
+        function RecordTable({ records, currency, t }) {
+          const rows = Array.isArray(records) ? records.slice(0, 10) : [];
+          if (rows.length === 0) return null;
+          const cell = (value, key, extra) => h('td', { key, style: extra }, value);
+          return h('div', null,
+            h('div', { className: 'dshb-sectionTitle' }, t('panel.records')),
+            h('table', { className: 'dshb-table' },
+              h('thead', null, h('tr', null,
+                cell(t('panel.thTime'), 'h1'),
+                cell(t('panel.thModel'), 'h2'),
+                cell(t('panel.thTokens'), 'h3', { textAlign: 'right' }),
+                cell(t('panel.thCost'), 'h4', { textAlign: 'right' }))),
+              h('tbody', null, rows.map((row, index) => h('tr', { key: `${row.time}-${index}` },
+                cell(formatRecordTime(row.time), 'c1'),
+                cell(row.model, 'c2', { maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }),
+                cell(formatTokens(row.tokens), 'c3', { textAlign: 'right' }),
+                cell(formatCost(row.cost, currency), 'c4', { textAlign: 'right' }))))));
+        }
+
+        ctx.slots.inject('shell.overlay', () => ctx.slots.register({name:'shell.overlay', id:'balance-panel',order:91}, BalancePanel));
+        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+          name: 'conversation.composer.dock',
+          id: 'balance',
+          order: 2,
+          locale: NS,
+        }, BalanceReading));
+      },
+    };
+    }
     const React = require('react');
     const h = React.createElement;
 
@@ -26,7 +627,7 @@ window.__ModuleLoader__.load({
     /** Same-origin route the Host half authenticates with the page's own credentials. */
     const SETTINGS_API = '/api/dsh-context-anchor/settings';
     /** Shown on the badge tooltip and in the panel header, so a stale page betrays itself. */
-    const CLIENT_VERSION = 'v1.15.1';
+    const CLIENT_VERSION = 'v1.16.0';
 
     /** Panel copy: Chinese only — the interface is part of a Chinese desktop. */
     const COPY = {
@@ -254,6 +855,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        createBalanceModule(require).apply(ctx);
         /** Segmented option that answers the pointer like the shipped menus. */
         function ChoiceButton(props) {
           const [hovered, hoverProps] = useHover();

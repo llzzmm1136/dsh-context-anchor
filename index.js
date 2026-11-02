@@ -23,6 +23,7 @@
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { applyBalance } from './balance-host.js'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -2254,6 +2255,7 @@ function resolveConfig(raw) {
 export function apply(ctx, rawConfig) {
   const config = resolveConfig(rawConfig)
   if (config.disabled) return
+  applyBalance(ctx)
 
   ctx.effect(() => {
     const disposeContext = ctx.systemPrompt.context({
